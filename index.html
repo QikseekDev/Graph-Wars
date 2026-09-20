@@ -122,7 +122,11 @@ canvas{display:block;width:100%;height:auto}
         <p class="mh">Bot vs Bot</p>
         <div class="mrow"><span class="lb">Base speed</span><input type="range" id="sSpeed2" min="1" max="6" value="2"><output id="sSpeed2V">2×</output></div>
         <div class="mhint">How fast the bots think, type and shoot.</div>
-        <label class="video-toggle"><input type="checkbox" id="videoMode"><span><b>Video mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Cinematic camera and export after the battle</small></span></label>
+        <div class="mrow"><span class="lb">Rounds</span><select id="battleRounds"><option value="1" selected>1 round</option><option value="3">3 rounds</option><option value="5">5 rounds</option><option value="7">7 rounds</option></select></div>
+        <label class="video-toggle"><input type="checkbox" id="videoMode"><span><b>Video mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Calm cinematic camera and MP4 export after the battle</small></span></label>
+        <label class="video-toggle"><input type="checkbox" id="highlightCards" checked><span><b>Highlight reel cards</b><small style="display:block;color:#a9c7a2;font-weight:normal">Add a battle title and winner card to the export</small></span></label>
+        <label class="video-toggle"><input type="checkbox" id="directorMode" checked><span><b>Director mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Mix battlefield wide shots with action close-ups</small></span></label>
+        <div class="mrow" id="orientationRow"><span class="lb">Video format</span><select id="videoOrientation"><option value="landscape">Landscape · 16:9</option><option value="portrait">Portrait · 9:16</option></select></div>
         <p class="mh" style="margin-top:16px">Bot teams &amp; soldiers per team</p>
         <div id="menuPanel"></div>
         <div class="mhint">Pick at least two teams. Each pick is its own team.</div>
@@ -153,7 +157,7 @@ canvas{display:block;width:100%;height:auto}
     <canvas id="cv"></canvas>
     <div id="recBadge">REC</div>
     <button id="fsExit">✕ Exit fullscreen</button>
-    <div id="over"><div id="overtxt"></div><a id="exportVideo" class="mbtn" download="graphwar-battle.webm">⬇ Export video</a><button id="again" style="font-size:1.2rem">Play again</button><button id="toMenu" class="mbtn ghost">Main menu</button></div>
+    <div id="over"><div id="overtxt"></div><a id="exportVideo" class="mbtn" download="graphwar-battle.mp4">⬇ Export video</a><button id="again" style="font-size:1.2rem">Play again</button><button id="toMenu" class="mbtn ghost">Main menu</button></div>
   </div>
   <div id="msg"></div>
   <div id="feed" class="hide"></div>
@@ -269,7 +273,13 @@ function compile(str){
 let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [], preview = null;
 let auto = false, gameId = 0, botBusy = false;
 let battle = false, speed = 1, stall = 0, feedList = [];
-let videoMode = false, recorder = null, recordedChunks = [], videoUrl = null, finishRecordingTimer = null;
+let videoMode = false, directorMode = true, highlightCards = true, recorder = null, recordedChunks = [], videoUrl = null, finishRecordingTimer = null;
+let recordCanvas = null, recordCtx = null, videoOrientation = 'landscape';
+let recordStream = null, recordTrack = null, recordMime = '';
+let recordingCard = null, battleNumber = 0, cameraShotCount = 0;
+let lastRecordingDraw = 0;
+let recordFrameTimer = null;
+let seriesTotal = 1, seriesRound = 1, seriesKinds = [], seriesPer = 1, seriesWins = {};
 const camera = {x:CW/2, y:CH/2, zoom:1, tx:CW/2, ty:CH/2, tz:1};
 const inp = $('inp');
 const aliveOf = t => teams[t].soldiers.filter(s => s.alive);
@@ -344,7 +354,8 @@ function nextTurn(){
 const canInput = () => state === 'aim' && turnTeam === 0 && !auto && !botBusy && !battle;
 function updateUI(){
   if (battle){
-    $('status').textContent = state === 'over' ? 'Battle over' : 'Bot Battle — ' + (current ? current.name + "'s turn" : '') + '   |   teams alive: ' + teams.filter((T, t) => aliveOf(t).length).length + '/' + teams.length + '   soldiers: ' + allAlive().length;
+    const roundLabel = seriesTotal > 1 ? 'Round ' + seriesRound + '/' + seriesTotal + ' — ' : '';
+    $('status').textContent = state === 'over' ? roundLabel + 'Battle over' : roundLabel + 'Bot Battle — ' + (current ? current.name + "'s turn" : '') + '   |   teams alive: ' + teams.filter((T, t) => aliveOf(t).length).length + '/' + teams.length + '   soldiers: ' + allAlive().length;
     renderBoard(); inp.readOnly = true; $('fire').disabled = true; $('solve').disabled = true; return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
@@ -386,46 +397,130 @@ function simulate(f, sh, dir){
 function recordingSupported(){ return !!(cv.captureStream && window.MediaRecorder); }
 function resetVideoExport(){
   if (finishRecordingTimer){ clearTimeout(finishRecordingTimer); finishRecordingTimer = null; }
+  if (recordFrameTimer){ clearInterval(recordFrameTimer); recordFrameTimer = null; }
   if (recorder && recorder.state !== 'inactive'){ try { recorder.stop(); } catch(e){} }
   recorder = null; recordedChunks = [];
+  if (recordTrack){ try { recordTrack.stop(); } catch(e){} }
+  recordStream = null; recordTrack = null;
   if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
   $('exportVideo').classList.remove('show'); $('exportVideo').removeAttribute('href'); $('recBadge').classList.remove('on');
 }
 function startVideoRecording(){
   resetVideoExport();
   if (!videoMode || !recordingSupported()){ if (videoMode) setMsg('Video export is not supported in this browser.', true); return; }
-  const stream = cv.captureStream(60);
+  videoOrientation = $('videoOrientation').value;
+  recordCanvas = document.createElement('canvas');
+  // A smaller frame keeps the encoder comfortably ahead of the game loop, which
+  // is what caused the stutter and the audio running ahead of the picture.
+  recordCanvas.width = videoOrientation === 'portrait' ? 608 : 960;
+  recordCanvas.height = videoOrientation === 'portrait' ? 1080 : 540;
+  recordCtx = recordCanvas.getContext('2d', {alpha:false, desynchronized:true});
+  lastRecordingDraw = 0;
+  drawRecordingFrame(performance.now(), true);
+  // A fixed 30fps capture: the browser stamps every frame on a steady clock, so
+  // players read the real length of the file instead of a few seconds.
+  // Manual frame pacing: captureStream(0) only emits a frame when we ask for one,
+  // so we push exactly 30 frames per second of real time even if the game loop
+  // stutters. Auto-capture dropped frames on slow ticks, which made the finished
+  // file run short on picture while the audio kept real time - that is what made
+  // the typing and shooting sounds arrive before the matching visuals.
+  recordStream = recordCanvas.captureStream(0);
+  recordTrack = recordStream.getVideoTracks()[0];
+  if (recordFrameTimer){ clearInterval(recordFrameTimer); recordFrameTimer = null; }
+  recordFrameTimer = setInterval(() => {
+    if (!recorder || recorder.state !== 'recording' || !recordTrack) return;
+    drawRecordingFrame(performance.now(), true);
+    if (recordTrack.requestFrame) recordTrack.requestFrame();
+    else if (recordStream.requestFrame) recordStream.requestFrame();
+  }, 1000/30);
   const audio = SFX.stream && SFX.stream();
-  if (audio) for (const track of audio.getAudioTracks()) stream.addTrack(track);
-  const types = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  if (audio) for (const track of audio.getAudioTracks()) recordStream.addTrack(track);
+  // MP4 first so the file plays anywhere; WebM only as a fallback.
+  const types = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4;codecs=h264,aac','video/mp4','video/webm;codecs=vp8,opus','video/webm'];
   const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
   try {
-    recorder = new MediaRecorder(stream, mimeType ? {mimeType, videoBitsPerSecond:8000000} : undefined);
+    recorder = new MediaRecorder(recordStream, mimeType ? {mimeType, videoBitsPerSecond:3000000, audioBitsPerSecond:128000} : undefined);
+    recordMime = recorder.mimeType || mimeType || 'video/webm';
     recorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
     recorder.onstop = () => {
+      if (recordFrameTimer){ clearInterval(recordFrameTimer); recordFrameTimer = null; }
       if (!recordedChunks.length) return;
-      videoUrl = URL.createObjectURL(new Blob(recordedChunks, {type: recorder.mimeType || 'video/webm'}));
-      $('exportVideo').href = videoUrl; $('exportVideo').download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.webm'; $('exportVideo').classList.add('show'); $('recBadge').classList.remove('on');
+      const mime = recorder.mimeType || recordMime;
+      const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
+      videoUrl = URL.createObjectURL(new Blob(recordedChunks, {type: mime}));
+      $('exportVideo').href = videoUrl;
+      $('exportVideo').download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.' + ext;
+      $('exportVideo').textContent = ext === 'mp4' ? '\u2b07 Export video (MP4)' : '\u2b07 Export video (WebM)';
+      $('exportVideo').classList.add('show'); $('recBadge').classList.remove('on');
     };
-    recorder.start(1000); $('recBadge').classList.add('on');
+    // Keep the recording as one continuous media segment. Periodic MP4 chunks each
+    // carried their own timing metadata, so joining them made players report only
+    // the first few seconds (roughly the intro) as the complete duration.
+    recorder.start(); $('recBadge').classList.add('on');
   } catch(e){ recorder = null; setMsg('This browser could not start video recording.', true); }
 }
-function finishVideoRecording(){
+function drawRecordingFrame(frameTime, force){
+  if (!recordCtx || !recordCanvas) return;
+  const drawAt = typeof frameTime === 'number' ? frameTime : performance.now();
+  if (!force && drawAt-lastRecordingDraw < 33) return;
+  lastRecordingDraw = drawAt;
+  const rw = recordCanvas.width, rh = recordCanvas.height;
+  recordCtx.fillStyle = '#fff'; recordCtx.fillRect(0, 0, rw, rh);
+  const scale = Math.max(rw / CW, rh / CH), dw = CW * scale, dh = CH * scale;
+  recordCtx.drawImage(cv, (rw - dw) / 2, (rh - dh) / 2, dw, dh);
+  if (recordingCard){
+    // Plain hand-made title card: flat colour, plain left-aligned text, nothing
+    // flashy. No sweeping gradients, no animated stripes, no social tags.
+    const now = drawAt, elapsed = now-recordingCard.started, left = recordingCard.until-now;
+    const fade = Math.min(1, elapsed/200, left/200), unit = Math.min(rw,rh);
+    recordCtx.save(); recordCtx.globalAlpha = Math.max(0, fade);
+    recordCtx.fillStyle = '#1e3a1c'; recordCtx.fillRect(0,0,rw,rh);
+    const safe = rw*.1, top = rh*.3;
+    recordCtx.textAlign='left'; recordCtx.textBaseline='alphabetic';
+    recordCtx.fillStyle='#cfe3c9'; recordCtx.font='700 '+Math.round(unit*.032)+'px "DejaVu Sans",Verdana,sans-serif';
+    recordCtx.fillText(recordingCard.eyebrow || 'Graphwar',safe,top,rw-safe*2);
+    recordCtx.fillStyle='#ffffff'; recordCtx.font='700 '+Math.round(unit*.075)+'px "DejaVu Sans",Verdana,sans-serif';
+    recordCtx.fillText(recordingCard.title,safe,top+unit*.11,rw-safe*2);
+    if (recordingCard.subtitle){
+      recordCtx.fillStyle='#e8c98a'; recordCtx.font='400 '+Math.round(unit*.04)+'px "DejaVu Sans",Verdana,sans-serif';
+      recordCtx.fillText(recordingCard.subtitle,safe,top+unit*.185,rw-safe*2);
+    }
+    if (recordingCard.detail){
+      recordCtx.fillStyle='#a9c7a2'; recordCtx.font='400 '+Math.round(unit*.03)+'px "DejaVu Sans",Verdana,sans-serif';
+      recordCtx.fillText(recordingCard.detail,safe,top+unit*.245,rw-safe*2);
+    }
+    recordCtx.restore();
+    if (now >= recordingCard.until) recordingCard = null;
+  }
+}
+function finishVideoRecording(card){
   if (!recorder || recorder.state === 'inactive') return;
-  finishRecordingTimer = setTimeout(() => { if (recorder && recorder.state !== 'inactive') recorder.stop(); }, 1400);
+  const delay = highlightCards ? 3200 : 1200;
+  if (highlightCards) recordingCard = Object.assign({started:performance.now(),until:performance.now()+2900},card);
+  finishRecordingTimer = setTimeout(() => { if (recorder && recorder.state !== 'inactive') recorder.stop(); }, delay);
 }
 function cameraTarget(){
+  // Follow a short section of the curve rather than its exact leading pixel. That
+  // keeps dense sine waves (especially Swarm Bot) from pulling the camera up and
+  // down on every wiggle while its horizontal progress remains easy to follow.
   if (!videoMode || !battle || state === 'over') return {x:CW/2,y:CH/2,z:1};
   if (shot && shot.path.length && (state === 'anim' || state === 'wait')){
-    const p = shot.path[Math.max(0, Math.min(shot.path.length - 1, Math.floor(shot.i) - 1))] || shot.path[0];
-    return {x:X(p.x),y:Y(p.y),z:state === 'wait' ? 2.05 : 2.25};
+    const lead = Math.max(0, Math.min(shot.path.length - 1, Math.floor(shot.i) - 1));
+    const isSwarm = shot.shooter && shot.shooter.kind === 'swarm';
+    const radius = isSwarm ? 180 : 75;
+    const from = Math.max(0, lead - radius), to = Math.min(shot.path.length - 1, lead + Math.floor(radius * .35));
+    let sx = 0, sy = 0, count = 0;
+    for (let i = from; i <= to; i += 3){ sx += shot.path[i].x; sy += shot.path[i].y; count++; }
+    const x = count ? sx / count : shot.path[lead].x;
+    const y = count ? sy / count : shot.path[lead].y;
+    return {x:X(x),y:Y(y),z:isSwarm ? 1.2 : (state === 'wait' ? 1.42 : 1.36)};
   }
-  if (current) return {x:X(current.x),y:Y(current.y),z:2.55};
+  if (directorMode && current && cameraShotCount % 3 === 2) return {x:X(current.x),y:Y(current.y),z:1.55};
   return {x:CW/2,y:CH/2,z:1};
 }
 function updateCamera(){
   const q = cameraTarget(); camera.tx=q.x; camera.ty=q.y; camera.tz=q.z;
-  camera.x += (camera.tx-camera.x)*.075; camera.y += (camera.ty-camera.y)*.075; camera.zoom += (camera.tz-camera.zoom)*.065;
+  camera.x += (camera.tx-camera.x)*.032; camera.y += (camera.ty-camera.y)*.022; camera.zoom += (camera.tz-camera.zoom)*.025;
   const hw=CW/(2*camera.zoom), hh=CH/(2*camera.zoom);
   camera.x=Math.max(hw,Math.min(CW-hw,camera.x)); camera.y=Math.max(hh,Math.min(CH-hh,camera.y));
 }
@@ -451,7 +546,7 @@ function fire(){
   let f; try { f = compile(inp.value); } catch(e){ setMsg(e.message, true); return; }
   const sh = current, r = simulate(f, sh, sh.dir);
   if (r.path.length < 2){ setMsg('That function goes nowhere — try another.', true); return; }
-  if (battle) chatLog(sh, inp.value);
+  if (battle){ chatLog(sh, inp.value); cameraShotCount++; }
   setMsg(''); state = 'anim'; preview = null; updateUI(); SFX.fire();
   sh.bubble = inp.value; sh.bubbleT = 0; sh.typing = null; talk(sh, 'fire', 0.35);
   shot = {path:r.path, hits:r.hits.map(h => ({s:h.s, i:h.i, done:false})), end:r.end, i:0, team:sh.team, shooter:sh};
@@ -464,11 +559,24 @@ function afterShot(){
     const up = teams.filter((T, t) => aliveOf(t).length); stall++;
     if (up.length <= 1 || stall >= 60){
       state = 'over'; updateUI(); SFX.win();
-      if (up.length === 1){ const w = aliveOf(teams.indexOf(up[0])); if (w.length) talk(pickOf(w), 'win', 1); }
-      $('overtxt').textContent = up.length === 1 ? BOTS[up[0].soldiers[0].kind].name + ' team wins!' : (up.length ? 'Peace prevails (draw)' : 'Everyone lost');
-      $('over').style.display = 'flex';
-      if (videoMode) finishVideoRecording();
-      else { const gid = gameId; setTimeout(() => { if (gid === gameId && battle) startGame(); }, 4000 / speed); }
+      const winnerKind = up.length === 1 ? up[0].soldiers[0].kind : null;
+      const winnerName = winnerKind ? BOTS[winnerKind].name : null;
+      const survivors = winnerKind ? aliveOf(teams.indexOf(up[0])).length : 0;
+      if (winnerKind){ seriesWins[winnerKind]=(seriesWins[winnerKind]||0)+1; const w=aliveOf(teams.indexOf(up[0])); if(w.length) talk(pickOf(w),'win',1); }
+      $('overtxt').textContent = winnerName ? winnerName + ' team wins!' : (up.length ? 'Peace prevails (draw)' : 'Everyone lost');
+      if(seriesRound < seriesTotal){
+        $('over').style.display='none';
+        if(videoMode && highlightCards){ const now=performance.now(); recordingCard={eyebrow:'Round '+seriesRound+' of '+seriesTotal,title:winnerName ? winnerName+' wins the round' : 'Round drawn',subtitle:scoreLine(),detail:'Next round coming up',started:now,until:now+2400}; }
+        const gid=gameId; setTimeout(()=>{ if(gid===gameId){ seriesRound++; setupBattleRound(false); } },videoMode&&highlightCards?2600:1600);
+      } else {
+        $('over').style.display='flex';
+        const leaders=seriesKinds.slice().sort((a,b)=>(seriesWins[b]||0)-(seriesWins[a]||0));
+        const tied=leaders.length>1&&(seriesWins[leaders[0]]||0)===(seriesWins[leaders[1]]||0);
+        const champion=tied?null:leaders[0], title=champion?BOTS[champion].name+' WINS':'SERIES DRAW';
+        $('overtxt').textContent=seriesTotal>1?title+' — '+scoreLine():$('overtxt').textContent;
+        if(videoMode) finishVideoRecording({eyebrow:'Final result',title:title.charAt(0)+title.slice(1).toLowerCase(),subtitle:seriesTotal>1?scoreLine():(survivors+' survivor'+(survivors===1?'':'s')),detail:seriesTotal>1?seriesTotal+' rounds played':'Thanks for watching'});
+        else if(seriesTotal===1){ const gid=gameId; setTimeout(()=>{ if(gid===gameId&&battle) startGame(); },4000/speed); }
+      }
       return;
     }
     nextTurn(); return;
@@ -527,7 +635,13 @@ function botSolve(sh, dir, level, cap = 99){
   const s0 = {x: dir * sh.x, y: sh.y};
   const ahead = enemiesOf(sh).map(s => ({x: dir * s.x, y: s.y})).filter(p => p.x > s0.x + 0.4).sort((a, b) => a.x - b.x);
   let best = null, bestScore = -1e9;
-  const maxScore = 10 * Math.min(cap, ahead.length);
+  const maxScore = 10 * Math.min(cap, ahead.length) + 8;
+  // Real-world coordinates of the enemies, used to judge how far a shot got and
+  // how close it passed before terrain stopped it.
+  const foes = enemiesOf(sh).map(s => ({x: s.x, y: s.y}));
+  let nearestX = sh.x + dir * 10;
+  for (const en of foes) if (Math.abs(en.x - sh.x) < Math.abs(nearestX - sh.x)) nearestX = en.x;
+  const terrainW = level === 'easy' ? 0.35 : 1;
   const tryPts = pts => {
     const P = [s0];
     for (const p of pts) if (p.x - P[P.length-1].x > 0.15) P.push(p);
@@ -535,7 +649,20 @@ function botSolve(sh, dir, level, cap = 99){
     const expr = makeExpr(P); let f; try { f = compile(expr); } catch(e){ return; }
     const r = simulate(f, sh, dir); let e = 0, o = 0;
     for (const h of r.hits) h.s.team === sh.team ? o++ : e++;
-    const sc = Math.min(e, cap) * 10 - o * 12;
+    // Walls, balls and the ground are already simulated, so reward shots that
+    // actually travel and pass close to an enemy. Without this every blocked
+    // shot scored the same and bots happily fired straight into terrain.
+    let reach = 0, closest = 1e9;
+    if (r.path.length){
+      const last = r.path[r.path.length-1];
+      reach = Math.min(1, Math.abs(last.x - sh.x) / Math.max(0.5, Math.abs(nearestX - sh.x)));
+      for (let i = 0; i < r.path.length; i += 6){
+        const q = r.path[i];
+        for (const en of foes){ const d = Math.hypot(en.x - q.x, en.y - q.y); if (d < closest) closest = d; }
+      }
+    }
+    const aimBonus = closest < 1e9 ? Math.max(0, 1 - closest / 10) : 0;
+    const sc = Math.min(e, cap) * 10 - o * 12 + terrainW * (3.5 * reach + 4 * aimBonus);
     if (sc > bestScore){ bestScore = sc; best = expr; }
   };
   if (!ahead.length) return {expr: '0.2*x'};
@@ -727,23 +854,33 @@ function makeTerrain(){
   }
   refreshTerrain();
 }
-function startBattle(){
-  resetVideoExport(); camera.x=CW/2; camera.y=CH/2; camera.zoom=1;
-  gameId++; botBusy = false; shot = null; expl = []; preview = null; stall = 0; feedList = []; $('feed').textContent = ''; $('chat').innerHTML = '';
+function scoreLine(){ return seriesKinds.map(k=>BOTS[k].name.replace(' Bot','')+' '+(seriesWins[k]||0)).join('  •  '); }
+function setupBattleRound(first){
+  camera.x=CW/2; camera.y=CH/2; camera.zoom=1;
+  gameId++; cameraShotCount=0; recordingCard=null; botBusy=false; shot=null; expl=[]; preview=null; stall=0; feedList=[]; $('feed').textContent=''; $('chat').innerHTML='';
   $('over').style.display = 'none';
   makeTerrain();
-  let kinds = [...document.querySelectorAll('#roster .tg.on')].map(b => b.dataset.kind);
-  if (kinds.length < 2) kinds = DEFAULT_ROSTER.slice();
-  const per = Math.max(1, Math.min(5, +$('perBot').value || 1)), slot = 46 / kinds.length;
-  teams = kinds.map(() => ({dir: 1, soldiers: [], ptr: -1}));
-  kinds.forEach((k, i) => {
-    for (let j = 0; j < per; j++){
-      placeSoldier(i, -23 + slot * i, -23 + slot * (i + 1), j, per);
+  const slot=46/seriesKinds.length;
+  teams=seriesKinds.map(()=>({dir:1,soldiers:[],ptr:-1}));
+  seriesKinds.forEach((k,i)=>{
+    for(let j=0;j<seriesPer;j++){
+      placeSoldier(i,-23+slot*i,-23+slot*(i+1),j,seriesPer);
       const s = teams[i].soldiers[j];
-      s.name = BOTS[k].name + (per > 1 ? ' ' + (j + 1) : ''); s.color = BOTS[k].color; s.kind = k;
+      s.name=BOTS[k].name+(seriesPer>1?' '+(j+1):''); s.color=BOTS[k].color; s.kind=k;
     }
   });
-  refreshTerrain(); turnTeam = teams.length - 1; inp.value = ''; startVideoRecording(); nextTurn();
+  refreshTerrain(); turnTeam=teams.length-1; inp.value=''; if(first) startVideoRecording();
+  if (videoMode && highlightCards){
+    const now = performance.now();
+    const firstTitle=seriesTotal>1?'BOT BATTLE SERIES':'BATTLE #'+battleNumber;
+    recordingCard={eyebrow:'Graphwar',title:first?(seriesTotal>1?seriesTotal+'-round battle':'Bot battle'):'Round '+seriesRound,subtitle:first?seriesKinds.map(k=>BOTS[k].name.replace(' Bot','')).join(' vs '):scoreLine(),detail:allAlive().length+' bots, '+teams.length+' teams',started:now,until:now+2600};
+    const gid=gameId; setTimeout(()=>{ if(gid===gameId) nextTurn(); },4200);
+  } else nextTurn();
+}
+function startBattle(){
+  resetVideoExport(); battleNumber++; seriesRound=1; seriesTotal=Math.max(1,+$('battleRounds').value||1); seriesWins={};
+  seriesKinds=[...document.querySelectorAll('#roster .tg.on')].map(b=>b.dataset.kind); if(seriesKinds.length<2) seriesKinds=DEFAULT_ROSTER.slice();
+  seriesPer=Math.max(1,Math.min(5,+$('perBot').value||1)); setupBattleRound(true);
 }
 function applyMode(){
   $('fsBtn').classList.toggle('hide', !battle); if (!battle) setFS(false);
@@ -1081,6 +1218,9 @@ getWakeLock();
     }
     $('mode').value = 'battle';
     videoMode = $('videoMode').checked;
+    highlightCards = $('highlightCards').checked;
+    directorMode = $('directorMode').checked;
+    videoOrientation = $('videoOrientation').value;
     setSpeed($('sSpeed2').value);
     closeMenu(); startGame();
   };
