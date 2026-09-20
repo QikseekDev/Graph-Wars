@@ -490,7 +490,9 @@ function updateUI(){
     renderBoard(); inp.readOnly = true; $('fire').disabled = true; $('solve').disabled = true; return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
-  let txt = state === 'over' ? 'Game over' : (mpState.mode === 'multiplayer' ? (turnTeam === mpState.myTeamIndex ? 'Your turn' : "Opponent's turn") : (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn"));
+  let txt = state === 'over' ? 'Game over' : (mpState.mode === 'multiplayer' ?
+    (state === 'waitResult' ? 'Waiting for the host to confirm the result…' : (turnTeam === mpState.myTeamIndex ? 'Your turn' : "Opponent's turn")) :
+    (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn"));
   $('status').textContent = txt + '   |   ' + (mpState.mode === 'multiplayer' ? 'Blue: ' + a0 + '  Red: ' + a1 : 'You: ' + a0 + '  Bots: ' + a1);
   inp.readOnly = !canInput(); $('fire').disabled = !canInput(); $('solve').disabled = !canInput();
 }
@@ -1040,6 +1042,19 @@ function afterShot(){
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
   if (!a0 || !a1){
+    // In multiplayer the host is authoritative about the result.  Both peers
+    // can reach the end of the local animation at slightly different times,
+    // so never let each browser independently decide that it won.
+    if (mpState.mode === 'multiplayer'){
+      if (mpState.isHost){
+        const winner = a0 && !a1 ? 0 : (!a0 && a1 ? 1 : -1);
+        broadcastToPlayers({type:'result', winner});
+        showMultiplayerResult(winner);
+      } else {
+        state = 'waitResult'; updateUI();
+      }
+      return;
+    }
     state = 'over'; updateUI(); SFX.win();
     $('overtxt').textContent = a0 && !a1 ? 'You win!' : (!a0 && a1 ? 'Bots win!' : 'Draw!');
     $('over').style.display = 'flex';
@@ -1412,7 +1427,7 @@ $('solve').onclick = () => {
 $('auto').onchange = e => { auto = e.target.checked; updateUI(); if (auto){ if (state === 'aim' && turnTeam === 0) botTurn(); else if (state === 'over') startGame(); } };
 $('cheat').oninput = e => { $('clvl').textContent = e.target.value; };
 $('diff').oninput = e => { $('lvl').textContent = e.target.value; };
-$('newg').onclick = startGame; $('again').onclick = startGame;
+$('newg').onclick = startGame; $('again').onclick = () => mpState.mode === 'multiplayer' ? playAgainMultiplayer() : startGame();
 
 /* ---------- sound (synthesised WebAudio) ---------- */
 const SFX = (() => {
@@ -1741,6 +1756,42 @@ let mpState = {
   roomListTimer: null
 };
 
+async function deleteRoomRecord(){
+  const code = mpState.roomCode;
+  if(!code) return;
+  try {
+    if(mpState.useDb){
+      await ensureRoomsTable();
+      await dbQuery('DELETE FROM ' + LB_TABLE + ' WHERE code = ' + sqlStr(code));
+    }
+  } catch(e){ console.warn('Could not delete room from Layerbase:', e); }
+  try {
+    const rooms = JSON.parse(localStorage.getItem('graphwar_rooms') || '[]').filter(r => r.code !== code);
+    localStorage.setItem('graphwar_rooms', JSON.stringify(rooms));
+  } catch(e){}
+}
+
+async function leaveMultiplayerRoom(notify=true){
+  if(!mpState.roomCode && !Object.keys(mpState.connections).length) return;
+  if(notify) broadcastToPlayers({type:'leave'});
+  await deleteRoomRecord();
+  Object.values(mpState.connections).forEach(conn => { try { conn.close(); } catch(e){} });
+  mpState.connections = {};
+  mpState.mode = 'singleplayer';
+  mpState.roomCode = null; mpState.myTeamIndex = -1;
+  mpState.ready = false; mpState.remoteReady = false; mpState.isHost = false; mpState.starting = false;
+  mpState.remoteReady = false;
+}
+
+function playAgainMultiplayer(){
+  if(mpState.mode !== 'multiplayer') return startGame();
+  $('over').style.display = 'none';
+  state = 'over';
+  mpTurnNo = 0; mpPendingShots = [];
+  if(mpState.isHost) startMultiplayerHost();
+  else broadcastToPlayers({type:'rematch_request'});
+}
+
 function initMultiplayer(){
   try {
     mpState.peer = new Peer();
@@ -1809,7 +1860,29 @@ function handleMultiplayerMessage(data, fromPeerId){
     applyMultiplayerStart(data);
   } else if(data.type === 'shot'){
     queueRemoteShot(data);
+  } else if(data.type === 'result'){
+    if(mpState.mode === 'multiplayer' && state !== 'over') showMultiplayerResult(Number.isInteger(data.winner) ? data.winner : -1);
+  } else if(data.type === 'rematch_request'){
+    if(mpState.isHost && mpState.mode === 'multiplayer') startMultiplayerHost();
+  } else if(data.type === 'leave'){
+    deleteRoomRecord().catch(()=>{});
+    setMsg('Opponent left the room.', true);
+    leaveMultiplayerRoom(false);
   }
+}
+
+function showMultiplayerResult(winner){
+  state = 'over';
+  updateUI();
+  const mine = winner === mpState.myTeamIndex;
+  const draw = winner < 0;
+  if (draw){
+    $('overtxt').textContent = 'Draw!';
+  } else {
+    $('overtxt').textContent = mine ? 'YOU WIN!' : 'YOU LOSE!';
+  }
+  $('over').style.display = 'flex';
+  if (draw) SFX.win(); else if (mine) SFX.win(); else SFX.death();
 }
 
 function startMultiplayerGame(seed, n0, n1, myTeam){
@@ -1826,6 +1899,9 @@ function startMultiplayerGame(seed, n0, n1, myTeam){
 }
 
 function startMultiplayerHost(){
+  // Initial start happens from the lobby; rematches happen from the result screen.
+  if(!mpState.isHost || mpState.starting) return;
+  if(mpState.mode !== 'lobby' && !(mpState.mode === 'multiplayer' && (state === 'over' || state === 'waitResult'))) return;
   mpState.starting = true;
   const seed = (realRandom() * 0xFFFFFFFF) >>> 0;
   const n0 = +$('n0').value || 3, n1 = +$('n1').value || 3;
@@ -2192,7 +2268,10 @@ async function displayRoomList(){
     maybeStartMultiplayer();
   };
   
-  document.querySelectorAll('#menu [data-back]').forEach(b => b.onclick = () => show('mMain'));
+  document.querySelectorAll('#menu [data-back]').forEach(b => b.onclick = async () => {
+    if (b.closest('#mMultiplayerLobby') && (mpState.roomCode || mpState.mode === 'lobby')) await leaveMultiplayerRoom();
+    show('mMain');
+  });
 
 
   $('mStart1').onclick = () => {
@@ -2218,8 +2297,17 @@ async function displayRoomList(){
   };
 
   $('menuBtn').onclick = openMenu;
-  $('toMenu').onclick = () => { $('over').style.display = 'none'; gameId++; mpState.mode = 'singleplayer'; mpState.ready = false; mpState.remoteReady = false; openMenu(); };
+  $('toMenu').onclick = async () => { $('over').style.display = 'none'; gameId++; if(mpState.mode === 'multiplayer' || mpState.roomCode) await leaveMultiplayerRoom(); openMenu(); };
   
+  addEventListener('beforeunload', () => {
+    if (mpState.roomCode) {
+      try { broadcastToPlayers({type:'leave'}); } catch(e){}
+      try {
+        const rooms = JSON.parse(localStorage.getItem('graphwar_rooms') || '[]').filter(r => r.code !== mpState.roomCode);
+        localStorage.setItem('graphwar_rooms', JSON.stringify(rooms));
+      } catch(e){}
+    }
+  });
   initMultiplayer();
   openMenu();
 })();
