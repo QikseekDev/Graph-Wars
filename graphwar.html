@@ -478,7 +478,7 @@ function nextTurn(){
     if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; }
   }
   state = 'aim';
-  if (mpState.mode === 'multiplayer'){ inp.value=''; updateUI(); if(canInput()) refreshPreview(); }
+  if (mpState.mode === 'multiplayer'){ inp.value=''; updateUI(); if(canInput()) refreshPreview(); drainRemoteShots(); return; }
   else if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
   else { inp.value = ''; updateUI(); refreshPreview(); }
 }
@@ -1000,7 +1000,8 @@ function fire(remoteExpr){
   let f; try { f = compile(inp.value); } catch(e){ setMsg(e.message, true); return; }
   const sh = current, r = simulate(f, sh, sh.dir);
   if (r.path.length < 2){ setMsg('That function goes nowhere — try another.', true); return; }
-  if (mpState.mode === 'multiplayer' && !isRemote) broadcastToPlayers({type:'shot', expr:inp.value, team:turnTeam});
+  if (mpState.mode === 'multiplayer' && !isRemote) broadcastToPlayers({type:'shot', expr:inp.value, team:turnTeam, turn:mpTurnNo, sig:aliveSignature()});
+  if (mpState.mode === 'multiplayer') mpTurnNo++;
   if (battle){ chatLog(sh, inp.value); cameraShotCount++; }
   lastFired = {who: sh, text: inp.value};
   setMsg(''); state = 'anim'; preview = null; updateUI(); SFX.fire();
@@ -1695,7 +1696,31 @@ document.addEventListener('fullscreenchange', getWakeLock);
 getWakeLock();
 
 
+/* ---------- deterministic shared randomness ----------
+   Both players must build the exact same battlefield. Instead of shipping the
+   terrain bitmap over the data channel (large, slow, and easy to lose), the
+   host picks one 32-bit seed and both sides generate the map and the soldier
+   placement from it. Math.random is swapped for a seeded generator only for
+   the duration of the map build, so the rest of the game is unaffected.
+*/
+const realRandom = Math.random.bind(Math);
+function mulberry32(a){
+  return function(){
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function withSeed(seed, fn){
+  Math.random = mulberry32(seed >>> 0);
+  try { return fn(); } finally { Math.random = realRandom; }
+}
+
 /* ---------- multiplayer system ---------- */
+let mpTurnNo = 0;          // how many shots have been resolved this game
+let mpPendingShots = [];   // remote shots that arrived before we were ready for them
+
 let mpState = {
   mode: 'singleplayer',
   peerId: null,
@@ -1782,46 +1807,59 @@ function handleMultiplayerMessage(data, fromPeerId){
     maybeStartMultiplayer();
   } else if(data.type === 'start' && !mpState.isHost){
     applyMultiplayerStart(data);
-  } else if(data.type === 'shot' && mpState.mode === 'multiplayer'){
-    if(state !== 'aim' || turnTeam === mpState.myTeamIndex || data.team !== turnTeam || typeof data.expr !== 'string') return;
-    fire(data.expr);
+  } else if(data.type === 'shot'){
+    queueRemoteShot(data);
   }
 }
 
-function multiplayerSnapshot(){
-  return {
-    type: 'start',
-    terrain: tc.toDataURL('image/png'),
-    teams: teams.map(T => ({dir:T.dir, ptr:T.ptr, soldiers:T.soldiers.map(s => ({x:s.x,y:s.y,team:s.team,alive:s.alive,dir:s.dir,name:s.name}))})),
-    turnTeam,
-    currentIndex: teams[turnTeam].soldiers.indexOf(current)
-  };
+function startMultiplayerGame(seed, n0, n1, myTeam){
+  gameId++; botBusy = false; shot = null; expl = []; preview = null;
+  auto = false; battle = false; videoMode = false;
+  mpState.mode = 'multiplayer'; mpState.myTeamIndex = myTeam; mpState.seed = seed;
+  mpTurnNo = 0; mpPendingShots = [];
+  // Both clients must animate at the same pace, otherwise turns overlap.
+  speed = 1; $('speed').value = 1; $('spd').textContent = '1';
+  $('mode').value = 'multiplayer';
+  $('n0').value = String(n0); $('n1').value = String(n1);
+  $('menu').classList.add('hide'); $('over').style.display = 'none';
+  withSeed(seed, () => startGame());
 }
 
 function startMultiplayerHost(){
   mpState.starting = true;
-  mpState.mode = 'multiplayer';
-  mpState.myTeamIndex = 0;
-  $('mode').value = 'multiplayer';
-  $('menu').classList.add('hide');
-  startGame();
-  broadcastToPlayers(multiplayerSnapshot());
+  const seed = (realRandom() * 0xFFFFFFFF) >>> 0;
+  const n0 = +$('n0').value || 3, n1 = +$('n1').value || 3;
+  broadcastToPlayers({type:'start', seed: seed, n0: n0, n1: n1});
+  startMultiplayerGame(seed, n0, n1, 0);
   mpState.starting = false;
 }
 
 function applyMultiplayerStart(data){
-  const img = new Image();
-  img.onload = () => {
-    gameId++; botBusy=false; shot=null; expl=[]; preview=null; battle=false; videoMode=false;
-    mpState.mode='multiplayer'; mpState.myTeamIndex=1;
-    $('mode').value='multiplayer'; applyMode(); $('menu').classList.add('hide'); $('over').style.display='none';
-    tctx.clearRect(0,0,CW,CH); tctx.drawImage(img,0,0,CW,CH); refreshTerrain();
-    teams=data.teams.map(T => ({dir:T.dir,ptr:T.ptr,soldiers:T.soldiers.map(s => ({...s}))}));
-    turnTeam=data.turnTeam; current=teams[turnTeam].soldiers[data.currentIndex] || aliveOf(turnTeam)[0];
-    state='aim'; inp.value=''; updateUI(); refreshPreview();
-  };
-  img.onerror = () => setMpStatus('Could not load the shared battlefield.', true);
-  img.src = data.terrain;
+  if(typeof data.seed !== 'number'){ setMpStatus('Could not start: no shared map seed received.', true); return; }
+  startMultiplayerGame(data.seed, data.n0 || 3, data.n1 || 3, 1);
+}
+
+// A shot only makes sense on the turn it was fired on, and only once the local
+// side has finished the previous animation. Anything early is parked here and
+// replayed in order; anything already applied is dropped.
+function aliveSignature(){
+  return teams ? teams.map(T => T.soldiers.map(x => x.alive ? 1 : 0).join('')).join('|') : '';
+}
+function queueRemoteShot(msg){
+  if(mpState.mode !== 'multiplayer') return;
+  mpPendingShots.push(msg);
+  drainRemoteShots();
+}
+function drainRemoteShots(){
+  if(mpState.mode !== 'multiplayer') return;
+  mpPendingShots = mpPendingShots.filter(m => typeof m.turn !== 'number' || m.turn >= mpTurnNo);
+  if(state !== 'aim' || botBusy) return;
+  const i = mpPendingShots.findIndex(m => typeof m.turn !== 'number' || m.turn === mpTurnNo);
+  if(i < 0) return;
+  const m = mpPendingShots.splice(i, 1)[0];
+  if(turnTeam === mpState.myTeamIndex || m.team !== turnTeam || typeof m.expr !== 'string') return;
+  if(m.sig && m.sig !== aliveSignature()) setMsg('Games drifted apart — results may differ.', true);
+  fire(m.expr);
 }
 
 function maybeStartMultiplayer(){
