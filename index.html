@@ -1812,6 +1812,23 @@ async function deleteRoomRecord(){
   } catch(e){}
 }
 
+// beforeunload/pagehide cannot reliably wait for an async fetch. Use a
+// keepalive request so the Layerbase DELETE can still reach Vercel after the
+// page starts closing. This is only a best-effort emergency cleanup; normal
+// Leave/Back/Menu actions still use deleteRoomRecord() above and await it.
+function deleteRoomRecordOnUnload(){
+  const code = mpState.roomCode;
+  if(!code || !mpState.useDb) return;
+  try {
+    fetch(LB_PROXY, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({query: 'DELETE FROM ' + LB_TABLE + ' WHERE code = ' + sqlStr(code)}),
+      keepalive: true
+    }).catch(()=>{});
+  } catch(e){}
+}
+
 async function leaveMultiplayerRoom(notify=true){
   if(!mpState.roomCode && !Object.keys(mpState.connections).length) return;
   if(notify) broadcastToPlayers({type:'leave'});
@@ -1928,7 +1945,17 @@ function handleIncomingConnection(conn){
     conn.send({type:'hello', name:mpState.playerName, ready:mpState.ready});
     maybeStartMultiplayer();
   });
-  conn.on('close', () => { delete mpState.connections[conn.peer]; if(mpState.isHost){ delete mpState.playerTeams[conn.peer]; delete mpState.roomPlayers[conn.peer]; sendRoster(); } updateLobbyDisplay(); });
+  conn.on('close', () => {
+    delete mpState.connections[conn.peer];
+    if(mpState.isHost){
+      delete mpState.playerTeams[conn.peer];
+      delete mpState.roomPlayers[conn.peer];
+      // A dropped/closed player must also remove the public room listing.
+      if(mpState.roomCode && mpState.mode !== 'singleplayer') deleteRoomRecord().catch(()=>{});
+      sendRoster();
+    }
+    updateLobbyDisplay();
+  });
 }
 
 function connectToPeer(peerId){
@@ -2455,15 +2482,17 @@ $('mMpCreateRoom').onclick = async () => {
   $('menuBtn').onclick = openMenu;
   $('toMenu').onclick = async () => { $('over').style.display = 'none'; gameId++; if(mpState.mode === 'multiplayer' || mpState.roomCode) await leaveMultiplayerRoom(); openMenu(); };
   
-  addEventListener('beforeunload', () => {
-    if (mpState.roomCode) {
-      try { broadcastToPlayers({type:'leave'}); } catch(e){}
-      try {
-        const rooms = JSON.parse(localStorage.getItem('graphwar_rooms') || '[]').filter(r => r.code !== mpState.roomCode);
-        localStorage.setItem('graphwar_rooms', JSON.stringify(rooms));
-      } catch(e){}
-    }
-  });
+  function emergencyLeave(){
+    if (!mpState.roomCode) return;
+    try { broadcastToPlayers({type:'leave'}); } catch(e){}
+    try {
+      const rooms = JSON.parse(localStorage.getItem('graphwar_rooms') || '[]').filter(r => r.code !== mpState.roomCode);
+      localStorage.setItem('graphwar_rooms', JSON.stringify(rooms));
+    } catch(e){}
+    deleteRoomRecordOnUnload();
+  }
+  addEventListener('beforeunload', emergencyLeave);
+  addEventListener('pagehide', emergencyLeave);
   initMultiplayer();
   openMenu();
 })();
