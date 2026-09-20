@@ -171,6 +171,12 @@ canvas{display:block;width:100%;height:auto}
           <p class="mh">Match Settings</p>
           <div class="mrow"><span class="lb">Players</span><select id="mpMaxPlayers"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></div>
           <div class="mrow"><span class="lb">Soldiers per player</span><select id="mpSoldiers"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+          <p class="mh" style="margin-top:14px">Multiplayer Mods</p>
+          <label class="video-toggle"><input type="checkbox" id="mpModSudden"><span><b>Sudden Death</b><small style="display:block;color:#a9c7a2;font-weight:normal">One soldier per player.</small></span></label>
+          <label class="video-toggle"><input type="checkbox" id="mpModBlind"><span><b>Blind Aim</b><small style="display:block;color:#a9c7a2;font-weight:normal">No trajectory preview; you must commit to the equation.</small></span></label>
+          <label class="video-toggle"><input type="checkbox" id="mpModRandom"><span><b>Random Turns</b><small style="display:block;color:#a9c7a2;font-weight:normal">The shared turn order is shuffled at the start.</small></span></label>
+          <label class="video-toggle"><input type="checkbox" id="mpModSpeed"><span><b>Speed Round</b><small style="display:block;color:#a9c7a2;font-weight:normal">Faster shot animations and turn flow.</small></span></label>
+          <div class="mhint">These mods only apply to online multiplayer and are chosen by the host.</div>
           <div class="mhint">The room host chooses these settings. Every player gets their own team.</div>
         </div>
         <div style="margin-top:14px">
@@ -479,9 +485,14 @@ function nextTurn(){
   }
   botBusy = false; shot = null; preview = null;
   const teamCount = teams.length;
-  for (let k = 1; k <= teamCount; k++){
-    const t = (turnTeam + k) % teamCount;
-    if (aliveOf(t).length){ turnTeam = t; break; }
+  if (mpState.mode === 'multiplayer' && mpState.mods.random && Array.isArray(mpState.turnOrder)){
+    const pos = mpState.turnOrder.indexOf(turnTeam);
+    for(let k=1;k<=teamCount;k++){ const t=mpState.turnOrder[(pos+k)%teamCount]; if(aliveOf(t).length){ turnTeam=t; break; } }
+  } else {
+    for (let k = 1; k <= teamCount; k++){
+      const t = (turnTeam + k) % teamCount;
+      if (aliveOf(t).length){ turnTeam = t; break; }
+    }
   }
   const T = teams[turnTeam], n = T.soldiers.length;
   for (let k = 1; k <= n; k++){
@@ -1413,6 +1424,7 @@ $('speed').oninput = e => { speed = +e.target.value; $('spd').textContent = spee
 function refreshPreview(){
   preview = null;
   if (state !== 'aim' || turnTeam !== (mpState.mode === 'multiplayer' ? mpState.myTeamIndex : 0)) return;
+  if (mpState.mode === 'multiplayer' && mpState.mods.blind){ preview = null; setMsg('Blind Aim: trajectory preview disabled.'); return; }
   if (!battle && !auto && current) current.typing = inp.value || null;
   const s = inp.value.trim();
   if (!s){ setMsg('Type a function of x, e.g. 0.5*x or 3*sin(x)'); return; }
@@ -1783,7 +1795,9 @@ let mpState = {
   isHost: false,
   starting: false,
   rooms: [],
-  roomListTimer: null
+  roomListTimer: null,
+  mods: {sudden:false, blind:false, random:false, speed:false},
+  turnOrder: null
 };
 
 async function deleteRoomRecord(){
@@ -1883,7 +1897,7 @@ function sendRoster(){
   Object.keys(mpState.playerTeams).forEach(id => players[id] = mpState.playerTeams[id]);
   const roster = [{peerId:mpState.peerId, name:mpState.playerName, team:0, ready:mpState.ready}];
   Object.keys(mpState.playerTeams).forEach(id => { const p=mpState.roomPlayers[id]||{}; roster.push({peerId:id,name:p.name||'Player',team:+mpState.playerTeams[id],ready:!!p.ready}); });
-  broadcastToPlayers({type:'welcome', players, roster, maxPlayers:mpState.maxPlayers, soldiers:mpState.soldiersPerPlayer});
+  broadcastToPlayers({type:'welcome', players, roster, maxPlayers:mpState.maxPlayers, soldiers:mpState.soldiersPerPlayer, mods:mpState.mods});
   updateLobbyDisplay();
 }
 
@@ -1916,6 +1930,7 @@ function handleMultiplayerMessage(data, fromPeerId){
   } else if(data.type === 'welcome' && !mpState.isHost){
     mpState.maxPlayers = Math.max(2, Math.min(4, +(data.maxPlayers || 2)));
     mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +(data.soldiers || 2)));
+    if(data.mods) mpState.mods = {...mpState.mods, ...data.mods};
     mpState.playerTeams = data.players || {};
     if(mpState.peerId && mpState.playerTeams[mpState.peerId] != null) mpState.myTeamIndex = +mpState.playerTeams[mpState.peerId];
     mpState.roomPlayers = {}; (data.roster || []).forEach(p => mpState.roomPlayers[p.peerId] = p);
@@ -1953,12 +1968,13 @@ function showMultiplayerResult(winner){
   if (draw) SFX.win(); else if (mine) SFX.win(); else SFX.death();
 }
 
-function startMultiplayerGame(seed, n0, n1, myTeam){
+function startMultiplayerGame(seed, n0, n1, myTeam, sharedTurnOrder){
   gameId++; botBusy = false; shot = null; expl = []; preview = null;
   battle = false; videoMode = false;
   auto = !!$('auto').checked;
   mpState.mode = 'multiplayer'; mpState.myTeamIndex = myTeam; mpState.seed = seed;
   mpTurnNo = 0; mpPendingShots = [];
+  mpState.turnOrder = Array.isArray(sharedTurnOrder) ? sharedTurnOrder.slice() : null;
   // Both clients use the same animation speed so turn timing stays deterministic.
   speed = Math.max(1, Math.min(3, +(mpState.matchSpeed || 1))); $('speed').value = speed; $('spd').textContent = speed;
   $('mode').value = 'multiplayer';
@@ -1968,7 +1984,7 @@ function startMultiplayerGame(seed, n0, n1, myTeam){
     // Multiplayer uses one team per connected player instead of the classic 2-team layout.
     gameId++; botBusy = false; shot = null; expl = []; preview = null;
     const count = Math.max(2, Math.min(4, +n0 || 2));
-    const soldiers = Math.max(1, Math.min(5, +n1 || 2));
+    const soldiers = mpState.mods.sudden ? 1 : Math.max(1, Math.min(5, +n1 || 2));
     teams = Array.from({length:count}, (_, i) => ({dir: i % 2 === 0 ? 1 : -1, soldiers:[], ptr:-1}));
     tctx.clearRect(0, 0, CW, CH); tctx.fillStyle = '#000';
     const no = 9 + Math.floor(Math.random()*5);
@@ -1980,7 +1996,8 @@ function startMultiplayerGame(seed, n0, n1, myTeam){
     const slot = 46 / count;
     for(let t=0;t<count;t++) for(let k=0;k<soldiers;k++) placeSoldier(t, -23 + slot*t, -23 + slot*(t+1), k, soldiers);
     refreshTerrain();
-    turnTeam = count - 1; inp.value=''; nextTurn();
+    if(!Array.isArray(mpState.turnOrder) || mpState.turnOrder.length !== count){ mpState.turnOrder = Array.from({length:count}, (_,i)=>i); }
+    turnTeam = mpState.turnOrder[mpState.turnOrder.length-1]; inp.value=''; nextTurn();
   });
 }
 
@@ -1992,11 +2009,14 @@ function startMultiplayerHost(){
   const seed = (realRandom() * 0xFFFFFFFF) >>> 0;
   const count = Math.max(2, Math.min(4, +mpState.maxPlayers || 2));
   const soldiers = Math.max(1, Math.min(5, +mpState.soldiersPerPlayer || 2));
-  const matchSpeed = Math.max(1, Math.min(3, +mpState.matchSpeed || 1));
+  const matchSpeed = mpState.mods.speed ? 2 : Math.max(1, Math.min(3, +mpState.matchSpeed || 1));
   mpState.maxPlayers = count; mpState.soldiersPerPlayer = soldiers; mpState.matchSpeed = matchSpeed;
   const playerCount = Math.min(count, Object.keys(mpState.playerTeams).length + 1);
-  broadcastToPlayers({type:'start', seed: seed, playerCount: playerCount, soldiers: soldiers, speed: matchSpeed, players: mpState.playerTeams});
-  startMultiplayerGame(seed, playerCount, soldiers, mpState.myTeamIndex < 0 ? 0 : mpState.myTeamIndex);
+  const order = Array.from({length:playerCount}, (_,i)=>i);
+  if(mpState.mods.random){ for(let i=order.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [order[i],order[j]]=[order[j],order[i]]; } }
+  mpState.turnOrder = order;
+  broadcastToPlayers({type:'start', seed: seed, playerCount: playerCount, soldiers: soldiers, speed: matchSpeed, players: mpState.playerTeams, mods: mpState.mods, turnOrder: order});
+  startMultiplayerGame(seed, playerCount, soldiers, mpState.myTeamIndex < 0 ? 0 : mpState.myTeamIndex, order);
   mpState.starting = false;
 }
 
@@ -2006,7 +2026,9 @@ function applyMultiplayerStart(data){
   mpState.maxPlayers = Math.max(2, Math.min(4, +(data.playerCount || 2)));
   mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +(data.soldiers || 2)));
   mpState.matchSpeed = Math.max(1, Math.min(3, +(data.speed || 1)));
-  startMultiplayerGame(data.seed, mpState.maxPlayers, mpState.soldiersPerPlayer, mpState.myTeamIndex < 0 ? 1 : mpState.myTeamIndex);
+  if(data.mods) mpState.mods = {...mpState.mods, ...data.mods};
+  mpState.turnOrder = Array.isArray(data.turnOrder) ? data.turnOrder.slice() : null;
+  startMultiplayerGame(data.seed, mpState.maxPlayers, mpState.soldiersPerPlayer, mpState.myTeamIndex < 0 ? 1 : mpState.myTeamIndex, mpState.turnOrder);
 }
 
 // A shot only makes sense on the turn it was fired on, and only once the local
@@ -2324,7 +2346,10 @@ async function displayRoomList(){
     }
     displayRoomList();
   };
-  $('mMpCreateRoom').onclick = async () => {
+  ['mpModSudden','mpModBlind','mpModRandom','mpModSpeed'].forEach(id => { const el=$(id); if(el) el.onchange=()=>{ mpState.mods={sudden:$('mpModSudden').checked, blind:$('mpModBlind').checked, random:$('mpModRandom').checked, speed:$('mpModSpeed').checked}; }; });
+
+$('mMpCreateRoom').onclick = async () => {
+  mpState.mods={sudden:$('mpModSudden').checked, blind:$('mpModBlind').checked, random:$('mpModRandom').checked, speed:$('mpModSpeed').checked};
     syncDbFieldsFromForm();
     if(dbConfigured() && !mpState.useDb){
       await testDbConnection();
