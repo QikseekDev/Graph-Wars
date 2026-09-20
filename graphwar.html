@@ -219,7 +219,7 @@ canvas{display:block;width:100%;height:auto}
 
 <div id="app">
   <div class="bar">
-    <label>Mode <select id="mode"><option value="classic">You vs bots</option><option value="battle">Bot battle (watch)</option></select></label>
+    <label>Mode <select id="mode"><option value="classic">You vs bots</option><option value="battle">Bot battle (watch)</option><option value="multiplayer">Online multiplayer</option></select></label>
     <span id="classicOpts" style="display:contents"><label>You <select id="n0"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
     <label>Bots <select id="n1"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
     <label>AI level <input type="range" id="diff" min="1" max="10" value="2" style="width:110px"> <b id="lvl">2</b></label>
@@ -478,10 +478,11 @@ function nextTurn(){
     if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; }
   }
   state = 'aim';
-  if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
+  if (mpState.mode === 'multiplayer'){ inp.value=''; updateUI(); if(canInput()) refreshPreview(); }
+  else if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
   else { inp.value = ''; updateUI(); refreshPreview(); }
 }
-const canInput = () => state === 'aim' && turnTeam === 0 && !auto && !botBusy && !battle;
+const canInput = () => state === 'aim' && turnTeam === (mpState.mode === 'multiplayer' ? mpState.myTeamIndex : 0) && !auto && !botBusy && !battle;
 function updateUI(){
   if (battle){
     const roundLabel = seriesTotal > 1 ? 'Round ' + seriesRound + '/' + seriesTotal + ' — ' : '';
@@ -489,8 +490,8 @@ function updateUI(){
     renderBoard(); inp.readOnly = true; $('fire').disabled = true; $('solve').disabled = true; return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
-  let txt = state === 'over' ? 'Game over' : (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn");
-  $('status').textContent = txt + '   |   You: ' + a0 + '  Bots: ' + a1;
+  let txt = state === 'over' ? 'Game over' : (mpState.mode === 'multiplayer' ? (turnTeam === mpState.myTeamIndex ? 'Your turn' : "Opponent's turn") : (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn"));
+  $('status').textContent = txt + '   |   ' + (mpState.mode === 'multiplayer' ? 'Blue: ' + a0 + '  Red: ' + a1 : 'You: ' + a0 + '  Bots: ' + a1);
   inp.readOnly = !canInput(); $('fire').disabled = !canInput(); $('solve').disabled = !canInput();
 }
 
@@ -992,11 +993,14 @@ function chatSystem(text){
   while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
   $('chat').scrollTop = $('chat').scrollHeight;
 }
-function fire(){
+function fire(remoteExpr){
   if (state !== 'aim') return;
+  const isRemote = typeof remoteExpr === 'string';
+  if (isRemote) inp.value = remoteExpr;
   let f; try { f = compile(inp.value); } catch(e){ setMsg(e.message, true); return; }
   const sh = current, r = simulate(f, sh, sh.dir);
   if (r.path.length < 2){ setMsg('That function goes nowhere — try another.', true); return; }
+  if (mpState.mode === 'multiplayer' && !isRemote) broadcastToPlayers({type:'shot', expr:inp.value, team:turnTeam});
   if (battle){ chatLog(sh, inp.value); cameraShotCount++; }
   lastFired = {who: sh, text: inp.value};
   setMsg(''); state = 'anim'; preview = null; updateUI(); SFX.fire();
@@ -1344,7 +1348,7 @@ function applyMode(){
   $('classicOpts').classList.toggle('hide', battle); $('ctrl').classList.toggle('hide', battle);
   ['roster', 'board', 'feed', 'chat'].forEach(id => $(id).classList.toggle('hide', !battle));
 }
-function startGame(){ battle = $('mode').value === 'battle'; if (!battle) videoMode = false; applyMode(); battle ? startBattle() : startClassic(); }
+function startGame(){ battle = $('mode').value === 'battle'; if ($('mode').value !== 'multiplayer') mpState.mode='singleplayer'; if (!battle) videoMode = false; applyMode(); battle ? startBattle() : startClassic(); }
 $('mode').onchange = startGame;
 
 /* ---------- fullscreen (bot battle) ---------- */
@@ -1371,16 +1375,16 @@ $('speed').oninput = e => { speed = +e.target.value; $('spd').textContent = spee
 /* ---------- preview & input ---------- */
 function refreshPreview(){
   preview = null;
-  if (state !== 'aim' || turnTeam !== 0) return;
+  if (state !== 'aim' || turnTeam !== (mpState.mode === 'multiplayer' ? mpState.myTeamIndex : 0)) return;
   if (!battle && !auto && current) current.typing = inp.value || null;
   const s = inp.value.trim();
   if (!s){ setMsg('Type a function of x, e.g. 0.5*x or 3*sin(x)'); return; }
-  try { preview = simulate(compile(s), current, 1).path; setMsg(''); }
+  try { preview = simulate(compile(s), current, current.dir).path; setMsg(''); }
   catch(e){ setMsg(e.message, true); }
 }
 inp.addEventListener('input', refreshPreview);
 inp.addEventListener('keydown', e => { if (e.key === 'Enter') fire(); });
-$('fire').onclick = fire;
+$('fire').onclick = () => fire();
 const KEYS = ['7','8','9','+','-','*','/','^','4','5','6','(',')','x','pi','e','1','2','3','abs(','sin(','cos(','tan(','ln(','0','.','sqrt(','exp(','⌫','C','←','→'];
 KEYS.forEach(k => {
   const b = document.createElement('button'); b.textContent = k; b.onclick = () => press(k); $('keys').appendChild(b);
@@ -1706,6 +1710,8 @@ let mpState = {
   myTeamIndex: -1,
   ready: false,
   remoteReady: false,
+  isHost: false,
+  starting: false,
   rooms: [],
   roomListTimer: null
 };
@@ -1737,7 +1743,11 @@ function setMpStatus(text, isErr){
 function handleIncomingConnection(conn){
   mpState.connections[conn.peer] = conn;
   conn.on('data', data => handleMultiplayerMessage(data, conn.peer));
-  conn.on('open', () => updateLobbyDisplay());
+  conn.on('open', () => {
+    updateLobbyDisplay();
+    conn.send({type:'hello', name:mpState.playerName, ready:mpState.ready});
+    maybeStartMultiplayer();
+  });
   conn.on('close', () => { delete mpState.connections[conn.peer]; updateLobbyDisplay(); });
 }
 
@@ -1745,24 +1755,78 @@ function connectToPeer(peerId){
   const conn = mpState.peer.connect(peerId);
   mpState.connections[peerId] = conn;
   conn.on('data', data => handleMultiplayerMessage(data, peerId));
-  conn.on('open', () => updateLobbyDisplay());
+  conn.on('open', () => {
+    updateLobbyDisplay();
+    conn.send({type:'hello', name:mpState.playerName, ready:mpState.ready});
+  });
   conn.on('close', () => { delete mpState.connections[peerId]; updateLobbyDisplay(); });
   return conn;
 }
 
 function broadcastToPlayers(msg){
   Object.values(mpState.connections).forEach(conn => {
+    if(!conn.open) return;
     try { conn.send(msg); } catch(e){ console.error('Send failed:', e); }
   });
 }
 
 function handleMultiplayerMessage(data, fromPeerId){
-  if(data.type === 'ready'){
-    mpState.remoteReady = true;
+  if(!data || typeof data.type !== 'string') return;
+  if(data.type === 'hello'){
+    mpState.remoteReady = !!data.ready;
     updateLobbyDisplay();
+    maybeStartMultiplayer();
+  } else if(data.type === 'ready'){
+    mpState.remoteReady = !!data.ready;
+    updateLobbyDisplay();
+    maybeStartMultiplayer();
+  } else if(data.type === 'start' && !mpState.isHost){
+    applyMultiplayerStart(data);
   } else if(data.type === 'shot' && mpState.mode === 'multiplayer'){
-    console.log('Remote shot:', data);
+    if(state !== 'aim' || turnTeam === mpState.myTeamIndex || data.team !== turnTeam || typeof data.expr !== 'string') return;
+    fire(data.expr);
   }
+}
+
+function multiplayerSnapshot(){
+  return {
+    type: 'start',
+    terrain: tc.toDataURL('image/png'),
+    teams: teams.map(T => ({dir:T.dir, ptr:T.ptr, soldiers:T.soldiers.map(s => ({x:s.x,y:s.y,team:s.team,alive:s.alive,dir:s.dir,name:s.name}))})),
+    turnTeam,
+    currentIndex: teams[turnTeam].soldiers.indexOf(current)
+  };
+}
+
+function startMultiplayerHost(){
+  mpState.starting = true;
+  mpState.mode = 'multiplayer';
+  mpState.myTeamIndex = 0;
+  $('mode').value = 'multiplayer';
+  $('menu').classList.add('hide');
+  startGame();
+  broadcastToPlayers(multiplayerSnapshot());
+  mpState.starting = false;
+}
+
+function applyMultiplayerStart(data){
+  const img = new Image();
+  img.onload = () => {
+    gameId++; botBusy=false; shot=null; expl=[]; preview=null; battle=false; videoMode=false;
+    mpState.mode='multiplayer'; mpState.myTeamIndex=1;
+    $('mode').value='multiplayer'; applyMode(); $('menu').classList.add('hide'); $('over').style.display='none';
+    tctx.clearRect(0,0,CW,CH); tctx.drawImage(img,0,0,CW,CH); refreshTerrain();
+    teams=data.teams.map(T => ({dir:T.dir,ptr:T.ptr,soldiers:T.soldiers.map(s => ({...s}))}));
+    turnTeam=data.turnTeam; current=teams[turnTeam].soldiers[data.currentIndex] || aliveOf(turnTeam)[0];
+    state='aim'; inp.value=''; updateUI(); refreshPreview();
+  };
+  img.onerror = () => setMpStatus('Could not load the shared battlefield.', true);
+  img.src = data.terrain;
+}
+
+function maybeStartMultiplayer(){
+  if(!mpState.isHost || mpState.starting || mpState.mode === 'multiplayer') return;
+  if(mpState.ready && mpState.remoteReady && Object.keys(mpState.connections).length) startMultiplayerHost();
 }
 
 /* ---------- Layerbase HTTP query API ----------
@@ -1945,12 +2009,14 @@ function updateLobbyDisplay(){
   const playersDiv = $('mpPlayers');
   playersDiv.innerHTML = '<b>Players:</b><br>';
   playersDiv.innerHTML += '<div class="mp-player">🔵 ' + mpState.playerName + ' (You)</div>';
-  if(Object.keys(mpState.connections).length > 0){
+  const liveConnections = Object.values(mpState.connections).filter(conn => conn.open);
+  if(liveConnections.length > 0){
     playersDiv.innerHTML += '<div class="mp-player">🟢 Opponent connected</div>';
   } else {
     playersDiv.innerHTML += '<div class="mp-player" style="opacity:0.5">⚫ Waiting for opponent...</div>';
   }
   const readyBtn = $('mMpReady');
+  readyBtn.disabled = liveConnections.length === 0;
   if(mpState.ready && mpState.remoteReady){
     $('mpLobbyStatus').textContent = '✓ Both ready! Game starting...';
     readyBtn.textContent = 'Ready ✓';
@@ -2051,7 +2117,9 @@ async function displayRoomList(){
       await testDbConnection();
     }
     mpState.roomCode = Math.random().toString(36).slice(2,8).toUpperCase();
+    mpState.isHost = true; mpState.mode = 'lobby'; mpState.myTeamIndex = 0;
     mpState.ready = false; mpState.remoteReady = false;
+    $('mpRoomCode').textContent = mpState.roomCode;
     await createRoom();
     updateLobbyDisplay();
     show('mMultiplayerLobby');
@@ -2072,7 +2140,9 @@ async function displayRoomList(){
       return;
     }
     mpState.roomCode = code;
+    mpState.isHost = false; mpState.mode = 'lobby'; mpState.myTeamIndex = 1;
     mpState.ready = false; mpState.remoteReady = false;
+    $('mpRoomCode').textContent = mpState.roomCode;
     connectToPeer(room.peerId);
     updateLobbyDisplay();
     show('mMultiplayerLobby');
@@ -2080,12 +2150,8 @@ async function displayRoomList(){
   $('mMpReady').onclick = () => {
     mpState.ready = !mpState.ready;
     updateLobbyDisplay();
-    broadcastToPlayers({type: 'ready'});
-    if(mpState.ready && mpState.remoteReady){
-      closeMenu();
-      $('mode').value = 'multiplayer';
-      setTimeout(() => { startGame(); }, 100);
-    }
+    broadcastToPlayers({type:'ready', ready:mpState.ready});
+    maybeStartMultiplayer();
   };
   
   document.querySelectorAll('#menu [data-back]').forEach(b => b.onclick = () => show('mMain'));
