@@ -8,13 +8,13 @@ const json = (res, status, data) => {
 };
 
 function normalizeQuery(query) {
-  return query.trim().replace(/\s+/g, " ").replace(/;+\s*$/, "");
+  return query.trim().replace(/\s+/g, " ").replace(/;+$\s*/, "");
 }
 
 function isSafeQuery(input) {
   const q = normalizeQuery(input);
 
-  // No SQL batching or comments.
+  // No query batching or SQL comments.
   if (q.includes(";") || /--|\/\*|\*\//.test(q)) return false;
 
   if (/^SELECT 1$/i.test(q)) return true;
@@ -50,11 +50,7 @@ function isSafeQuery(input) {
   if (new RegExp(
     `^INSERT INTO ${TABLE} ` +
     `\\(code, peer_id, host, created, players\\) VALUES ` +
-    `\\('(?!')(?:(?:'')|[^'])*', ` +
-    `'(?:''|[^'])*', ` +
-    `'(?:''|[^'])*', ` +
-    `[0-9]+, ` +
-    `'(?:''|[^'])*'\\)$`,
+    `\\('(?:''|[^'])*', '(?:''|[^'])*', '(?:''|[^'])*', [0-9]+, '(?:''|[^'])*'\\)$`,
     "i"
   ).test(q)) return true;
 
@@ -146,7 +142,8 @@ export default async function handler(req, res) {
     res.statusCode = upstream.status;
     res.setHeader(
       "Content-Type",
-      upstream.headers.get("content-type") || "application/json"
+      upstream.headers.get("content-type") ||
+        "application/json"
     );
     res.setHeader("Cache-Control", "no-store");
     res.end(text);
