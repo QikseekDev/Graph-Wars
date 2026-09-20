@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Graphwar</title>
+<style>
+:root{--bg:#a9d6a0;--panel:#e4f2df;--panel2:#5f8a59;--ink:#1a2a18;--muted:#33502f;--accent:#e08a00;--red:#c62828;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:linear-gradient(#b9e4b0,#98cd8f) fixed;color:var(--ink);font-family:"DejaVu Sans",Verdana,system-ui,sans-serif}
+#app{max-width:1000px;margin:0 auto;padding:8px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.bar label{font-size:.8rem;color:var(--muted);display:flex;gap:4px;align-items:center}
+select,button,input{font:inherit;color:var(--ink)}
+select{background:var(--panel);border:1px solid var(--panel2);border-radius:6px;padding:4px}
+button{background:var(--panel);border:2px solid var(--panel2);border-radius:8px;padding:8px 10px;cursor:pointer}
+button:active{background:var(--panel2)}
+button:disabled{opacity:.45}
+#status{font-size:1rem;font-weight:bold;margin:4px 0}
+#msg{font-size:.85rem;min-height:1.2em;color:var(--muted)}
+#msg.err{color:#ff8a80}
+.stage{position:relative;border:1px solid #000;overflow:hidden;background:#fff}
+canvas{display:block;width:100%;height:auto}
+#over{color:#fff;display:none;position:absolute;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;flex-direction:column;gap:14px;font-size:2rem;font-weight:bold}
+.fx{display:flex;gap:8px;margin:8px 0;align-items:center}
+.fx span{font-size:1.7rem;font-weight:bold;white-space:nowrap;color:#f39a1f;text-shadow:-1px -1px 0 #333,1px -1px 0 #333,-1px 1px 0 #333,1px 1px 0 #333}
+#inp{flex:1;min-width:0;background:#fff;border:1px solid #6b7f68;border-radius:2px;padding:10px;font-size:1.1rem;font-family:ui-monospace,Menlo,Consolas,monospace}
+#fire{background:linear-gradient(#eef3ec,#a3b89e);border:2px solid #3b4a38;border-radius:8px;color:#f7a21b;font-size:1.5rem;font-weight:bold;padding:6px 30px;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000}
+#fire:active{background:linear-gradient(#a3b89e,#eef3ec)}
+.keys{display:grid;grid-template-columns:repeat(8,1fr);gap:5px}
+.keys button{padding:10px 0;font-size:1rem;font-weight:bold}
+.cheat{margin-top:10px;padding:8px;border:1px dashed var(--panel2);border-radius:8px}
+.cheat b{color:var(--accent)}
+.hide{display:none!important}
+#board{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
+.chip{display:inline-flex;gap:5px;align-items:center;background:var(--panel);border:1px solid var(--panel2);border-radius:999px;padding:3px 9px;font-size:.8rem}
+.chip i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.chip.dead{opacity:.4;text-decoration:line-through}
+#feed{font-size:.85rem;color:var(--muted);min-height:1.3em;margin-top:4px}
+#roster{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px;font-size:.8rem}
+#roster label{background:var(--panel);border:1px solid var(--panel2);border-radius:999px;padding:3px 9px;display:flex;gap:4px;align-items:center;cursor:pointer}
+#roster .tg{display:inline-flex;gap:5px;align-items:center;background:transparent;border:2px solid var(--panel2);border-radius:999px;padding:3px 10px;font-size:.8rem;opacity:.5}
+#roster .tg.on{opacity:1;background:#fff;border-color:#e08a00}
+#roster .tg i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.tm{display:inline-flex;flex-wrap:wrap;gap:4px;padding:3px;border:1px dashed var(--panel2);border-radius:14px}
+.tm.out{opacity:.45}
+#roster input.rq{width:38px;background:var(--panel2);border:1px solid var(--panel2);border-radius:5px;color:var(--ink);padding:2px 3px;text-align:center}
+#chat{max-height:150px;overflow-y:auto;background:#fff;border:1px solid #6b7f68;border-radius:2px;padding:6px 9px;margin:6px 0;font-size:.82rem}
+.chat-line{padding:3px 0;color:#111;line-height:1.35;border-bottom:1px solid rgba(255,255,255,.05)}
+.chat-line:last-child{border-bottom:none}
+.chat-line.sys{color:var(--muted);font-style:italic}
+.stage.fs{position:fixed;inset:0;z-index:9999;border-radius:0;background:#000;display:flex;align-items:center;justify-content:center}
+.stage.fs canvas{width:min(100vw,calc(100dvh*5/3));height:auto;max-height:100dvh}
+#fsExit{color:#fff;display:none;position:absolute;top:calc(8px + env(safe-area-inset-top,0px));right:8px;z-index:2;padding:6px 12px;background:rgba(16,35,26,.85)}
+.stage.fs #fsExit{display:block}
+.bubble{position:absolute;transform:translate(-50%,-100%);background:#fff;color:#111;border:2px solid #333;border-radius:8px;padding:3px 7px;font-size:.72rem;font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap;pointer-events:none;box-shadow:0 2px 4px rgba(0,0,0,.3)}
+.bubble:after{content:'';position:absolute;left:50%;top:100%;transform:translateX(-50%);border:6px solid transparent;border-top-color:#333}
+
+/* ---------- main menu ---------- */
+#menu{position:fixed;inset:0;z-index:5000;background:linear-gradient(160deg,#0f2418,#2c4a2a 55%,#16301d);color:#eef7ea;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:22px 14px 40px}
+#menu.hide{display:none!important}
+.mwrap{width:100%;max-width:520px}
+.mtitle{font-size:2.4rem;font-weight:bold;letter-spacing:.08em;text-align:center;margin:10px 0 2px;color:#f7a21b;text-shadow:-2px -2px 0 #0c1c12,2px -2px 0 #0c1c12,-2px 2px 0 #0c1c12,2px 2px 0 #0c1c12}
+.msub{text-align:center;font-size:.85rem;color:#a9c7a2;margin-bottom:22px}
+.mscreen.hide{display:none!important}
+.mbtn{display:block;width:100%;text-align:left;margin:10px 0;padding:16px 18px;font-size:1.15rem;font-weight:bold;color:#0f2418;background:linear-gradient(#eef3ec,#b9d2b2);border:2px solid #0f2418;border-radius:12px;cursor:pointer}
+.mbtn small{display:block;font-weight:normal;font-size:.78rem;color:#2e4a2c;margin-top:3px}
+.mbtn:active{background:linear-gradient(#b9d2b2,#eef3ec)}
+.mbtn.ghost{background:transparent;color:#eef7ea;border-color:#7fa578;font-size:.95rem;text-align:center}
+.mcard{background:rgba(255,255,255,.07);border:1px solid #6f9668;border-radius:14px;padding:14px;margin-bottom:14px}
+.mrow{display:flex;align-items:center;gap:10px;margin:12px 0}
+.mrow>span.lb{flex:1;font-size:.92rem}
+.mrow output{min-width:2.2em;text-align:right;font-weight:bold;color:#f7a21b}
+.mrow input[type=range]{flex:1.2;accent-color:#f7a21b}
+.mrow select{background:#eef3ec;border:1px solid #0f2418;border-radius:6px;padding:5px 7px}
+.mhint{font-size:.76rem;color:#a9c7a2;margin:-4px 0 6px}
+.mh{font-size:.8rem;text-transform:uppercase;letter-spacing:.12em;color:#a9c7a2;margin:0 0 8px}
+#menuPanel{margin-bottom:10px}
+#menuPanel #roster{display:flex!important;margin:0}
+#menuPanel #roster label,#menuPanel #roster .tg{color:#0f2418}
+#menuPanel #roster .tg{background:rgba(255,255,255,.85);border-color:#0f2418}
+#menuPanel #roster .tg.on{background:#fff;border-color:#e08a00}
+#menuBtn{margin-left:auto}
+#over .mbtn{max-width:260px;font-size:1rem}
+.video-toggle{display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid #6f9668;border-radius:8px;background:rgba(255,255,255,.06)}
+.video-toggle input{width:18px;height:18px;accent-color:#f7a21b}
+#recBadge{display:none;position:absolute;top:10px;left:10px;z-index:3;padding:6px 9px;border-radius:6px;background:rgba(20,20,20,.78);color:#fff;font-size:.78rem;font-weight:bold;letter-spacing:.06em}
+#recBadge.on{display:block}
+#recBadge:before{content:'';display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background:#ef3e37;animation:recPulse 1.2s ease-in-out infinite}
+#exportVideo{display:none;max-width:260px;text-align:center;text-decoration:none}
+#exportVideo.show{display:block}
+@keyframes recPulse{50%{opacity:.35}}
+
+</style>
+</head>
+<body>
+<div id="menu">
+  <div class="mwrap">
+    <div class="mtitle">GRAPHWAR</div>
+    <div class="msub">Shoot your enemies with mathematical functions</div>
+
+    <div class="mscreen" id="mMain">
+      <button class="mbtn" id="mPvb">Player vs Bots<small>You type the equations against a bot team</small></button>
+      <button class="mbtn" id="mBvb">Bot vs Bot<small>Watch bot teams fight each other</small></button>
+    </div>
+
+    <div class="mscreen hide" id="mPvbSet">
+      <div class="mcard">
+        <p class="mh">Player vs Bots</p>
+        <div class="mrow"><span class="lb">Your soldiers</span><select id="sPlayers"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
+        <div class="mrow"><span class="lb">Bot soldiers</span><select id="sBots"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
+        <div class="mrow"><span class="lb">Bot intelligence</span><input type="range" id="sDiff" min="1" max="10" value="4"><output id="sDiffV">4</output></div>
+        <div class="mhint">1 = wild guesses, 10 = sharp aim.</div>
+        <div class="mrow"><span class="lb">Game speed</span><input type="range" id="sSpeed1" min="1" max="6" value="1"><output id="sSpeed1V">1×</output></div>
+      </div>
+      <button class="mbtn" id="mStart1">Start game</button>
+      <button class="mbtn ghost" data-back="1">Back</button>
+    </div>
+
+    <div class="mscreen hide" id="mBvbSet">
+      <div class="mcard">
+        <p class="mh">Bot vs Bot</p>
+        <div class="mrow"><span class="lb">Base speed</span><input type="range" id="sSpeed2" min="1" max="6" value="2"><output id="sSpeed2V">2×</output></div>
+        <div class="mhint">How fast the bots think, type and shoot.</div>
+        <label class="video-toggle"><input type="checkbox" id="videoMode"><span><b>Video mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Cinematic camera and export after the battle</small></span></label>
+        <p class="mh" style="margin-top:16px">Bot teams &amp; soldiers per team</p>
+        <div id="menuPanel"></div>
+        <div class="mhint">Pick at least two teams. Each pick is its own team.</div>
+      </div>
+      <button class="mbtn" id="mStart2">Start battle</button>
+      <button class="mbtn ghost" data-back="1">Back</button>
+    </div>
+  </div>
+</div>
+
+<div id="app">
+  <div class="bar">
+    <label>Mode <select id="mode"><option value="classic">You vs bots</option><option value="battle">Bot battle (watch)</option></select></label>
+    <span id="classicOpts" style="display:contents"><label>You <select id="n0"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
+    <label>Bots <select id="n1"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
+    <label>AI level <input type="range" id="diff" min="1" max="10" value="2" style="width:110px"> <b id="lvl">2</b></label>
+    </span>
+    <label>Speed <input type="range" id="speed" min="1" max="6" value="1" style="width:80px"> <b id="spd">1</b>×</label>
+    <button id="newg">New game</button>
+    <button id="snd" title="Sound on/off">🔊</button>
+    <button id="fsBtn" class="hide">⛶ Fullscreen</button>
+    <button id="menuBtn">☰ Menu</button>
+  </div>
+  <div id="status"></div>
+  <div id="roster" class="hide"></div>
+  <div id="board" class="hide"></div>
+  <div class="stage">
+    <canvas id="cv"></canvas>
+    <div id="recBadge">REC</div>
+    <button id="fsExit">✕ Exit fullscreen</button>
+    <div id="over"><div id="overtxt"></div><a id="exportVideo" class="mbtn" download="graphwar-battle.webm">⬇ Export video</a><button id="again" style="font-size:1.2rem">Play again</button><button id="toMenu" class="mbtn ghost">Main menu</button></div>
+  </div>
+  <div id="msg"></div>
+  <div id="feed" class="hide"></div>
+  <div id="chat" class="hide"></div>
+  <div id="ctrl">
+  <div class="fx">
+    <span>y =</span>
+    <input id="inp" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 0.5*x + 3*sin(x)">
+    <button id="fire">Fire!</button>
+  </div>
+  <div class="keys" id="keys"></div>
+  <div class="cheat">
+    <b>Cheats</b>
+    <div class="bar" style="margin:6px 0 0">
+      <button id="solve">Solve for me</button>
+      <label>Cheat strength <input type="range" id="cheat" min="1" max="10" value="6" style="width:110px"> <b id="clvl">6</b></label>
+      <label><input type="checkbox" id="auto"> Auto-play (game plays itself)</label>
+    </div>
+  </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const CW = 1000, CH = 600, PXU = 20;
+const cv = $('cv'), ctx = cv.getContext('2d'); cv.width = CW; cv.height = CH;
+const tc = document.createElement('canvas'); tc.width = CW; tc.height = CH;
+const tctx = tc.getContext('2d');
+const X = x => (x + 25) * PXU, Y = y => (15 - y) * PXU;
+let tdata = null;
+const refreshTerrain = () => { tdata = tctx.getImageData(0, 0, CW, CH).data; };
+function solid(x, y){
+  const px = Math.floor((x + 25) * PXU), py = Math.floor((15 - y) * PXU);
+  if (px < 0 || py < 0 || px >= CW || py >= CH) return false;
+  return tdata[(py * CW + px) * 4 + 3] > 100;
+}
+function carve(x, y, r){
+  tctx.save(); tctx.globalCompositeOperation = 'destination-out';
+  tctx.beginPath(); tctx.arc(X(x), Y(y), r * PXU, 0, 7); tctx.fill(); tctx.restore();
+  refreshTerrain();
+}
+
+/* ---------- expression parser ---------- */
+const FUNCS = {abs:Math.abs, sin:Math.sin, cos:Math.cos, tan:Math.tan, ln:Math.log, log:Math.log10,
+  sqrt:Math.sqrt, exp:Math.exp, asin:Math.asin, acos:Math.acos, atan:Math.atan, tanh:Math.tanh};
+const NAMES = [...Object.keys(FUNCS), 'pi', 'x', 'e'].sort((a,b) => b.length - a.length);
+function tokenize(s){
+  const t = []; s = s.toLowerCase().replace(/π/g,'pi').replace(/\s+/g,''); let i = 0;
+  while (i < s.length){
+    const c = s[i];
+    if (/[0-9.]/.test(c)){
+      const m = /^(\d+\.?\d*|\.\d+)/.exec(s.slice(i)); if (!m) throw new Error('Bad number');
+      t.push({t:'n', v:parseFloat(m[0])}); i += m[0].length;
+    } else if (/[a-z]/.test(c)){
+      const f = NAMES.find(n => s.startsWith(n, i)); if (!f) throw new Error('Unknown "' + c + '"');
+      t.push({t:'id', v:f}); i += f.length;
+    } else if ('+-*/^()'.includes(c)){ t.push({t:c}); i++; }
+    else throw new Error('Bad character "' + c + '"');
+  }
+  return t;
+}
+function compile(str){
+  const t = tokenize(str); if (!t.length) throw new Error('Empty function');
+  let p = 0; const peek = () => t[p];
+  function expr(){
+    let l = term();
+    while (peek() && (peek().t === '+' || peek().t === '-')){
+      const op = t[p++].t, r = term(), a = l;
+      l = op === '+' ? x => a(x) + r(x) : x => a(x) - r(x);
+    }
+    return l;
+  }
+  function term(){
+    let l = unary();
+    while (peek()){
+      const k = peek().t;
+      if (k === '*' || k === '/'){ p++; const r = unary(), a = l; l = k === '*' ? x => a(x) * r(x) : x => a(x) / r(x); }
+      else if (k === 'n' || k === 'id' || k === '('){ const r = unary(), a = l; l = x => a(x) * r(x); }
+      else break;
+    }
+    return l;
+  }
+  function unary(){
+    if (peek() && peek().t === '-'){ p++; const u = unary(); return x => -u(x); }
+    if (peek() && peek().t === '+'){ p++; return unary(); }
+    return power();
+  }
+  function power(){
+    const b = atom();
+    if (peek() && peek().t === '^'){ p++; const e = unary(); return x => Math.pow(b(x), e(x)); }
+    return b;
+  }
+  function close(){ if (p >= t.length) return; if (t[p].t !== ')') throw new Error('Expected )'); p++; }
+  function atom(){
+    const k = t[p++]; if (!k) throw new Error('Unfinished function');
+    if (k.t === 'n'){ const v = k.v; return () => v; }
+    if (k.t === '('){ const e = expr(); close(); return e; }
+    if (k.t === 'id'){
+      if (k.v === 'x') return x => x;
+      if (k.v === 'pi') return () => Math.PI;
+      if (k.v === 'e') return () => Math.E;
+      const fn = FUNCS[k.v];
+      if (!peek() || peek().t !== '(') throw new Error(k.v + ' needs ( )');
+      p++; const e = expr(); close(); return x => fn(e(x));
+    }
+    throw new Error('Unexpected "' + k.t + '"');
+  }
+  const f = expr(); if (p < t.length) throw new Error('Unexpected "' + t[p].t + '"');
+  return f;
+}
+
+/* ---------- game state ---------- */
+let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [], preview = null;
+let auto = false, gameId = 0, botBusy = false;
+let battle = false, speed = 1, stall = 0, feedList = [];
+let videoMode = false, recorder = null, recordedChunks = [], videoUrl = null, finishRecordingTimer = null;
+const camera = {x:CW/2, y:CH/2, zoom:1, tx:CW/2, ty:CH/2, tz:1};
+const inp = $('inp');
+const aliveOf = t => teams[t].soldiers.filter(s => s.alive);
+const allAlive = () => teams.flatMap(t => t.soldiers.filter(s => s.alive));
+const enemiesOf = sh => allAlive().filter(s => s.team !== sh.team);
+const setMsg = (m, err) => { $('msg').textContent = m || ''; $('msg').className = err ? 'err' : ''; };
+
+function clearSpot(x, y, r){
+  if (solid(x, y)) return false;
+  for (let a = 0; a < 8; a++) if (solid(x + Math.cos(a*Math.PI/4)*r, y + Math.sin(a*Math.PI/4)*r)) return false;
+  return true;
+}
+function placeSoldier(t, lo, hi, idx, total){
+  const all = teams.flatMap(t => t.soldiers);
+  // Better spacing: divide the range into even slots per soldier index so bots
+  // don't cluster; fall back to the full range if a slot has no clear spot.
+  const slot = (total && total > 0) ? (hi - lo) / total : (hi - lo);
+  const slotLo = (idx !== undefined && total) ? lo + slot * idx : lo;
+  const slotHi = (idx !== undefined && total) ? slotLo + slot : hi;
+  const pad = slot * 0.12;
+  for (let i = 0; i < 400; i++){
+    const useSlot = i < 260 && total;
+    const rlo = useSlot ? slotLo + pad : lo, rhi = useSlot ? slotHi - pad : hi;
+    const x = rlo + Math.random()*(rhi-rlo), y = -13 + Math.random()*26;
+    if (!clearSpot(x, y, 1.8)) continue;
+    if (all.some(s => Math.hypot(s.x-x, s.y-y) < 3.5)) continue;
+    teams[t].soldiers.push({x, y, team:t, alive:true, dir:teams[t].dir}); return;
+  }
+  const x = lo + Math.random()*(hi-lo), y = -10 + Math.random()*20;
+  carve(x, y, 1.8); teams[t].soldiers.push({x, y, team:t, alive:true, dir:teams[t].dir});
+}
+function startClassic(){
+  gameId++; botBusy = false; shot = null; expl = []; preview = null;
+  $('over').style.display = 'none';
+  tctx.clearRect(0, 0, CW, CH); tctx.fillStyle = '#000';
+  const no = 9 + Math.floor(Math.random()*5);
+  for (let i = 0; i < no; i++){
+    const big = Math.random() < 0.2;
+    const r = (big ? 3.5 : 0.9) + Math.random() * (big ? 3 : 2.2);
+    tctx.beginPath(); tctx.arc(X(-25 + Math.random()*50), Y(-15 + Math.random()*30), r*PXU, 0, 7); tctx.fill();
+  }
+  refreshTerrain();
+  teams = [{dir:1, soldiers:[], ptr:-1}, {dir:-1, soldiers:[], ptr:-1}];
+  const n0v = +$('n0').value, n1v = +$('n1').value;
+  for (let k = 0; k < n0v; k++) placeSoldier(0, -23, -3, k, n0v);
+  for (let k = 0; k < n1v; k++) placeSoldier(1, 3, 23, k, n1v);
+  refreshTerrain();
+  turnTeam = 1; inp.value = ''; nextTurn();
+}
+function nextTurn(){
+  if (battle){
+    botBusy = false; shot = null; preview = null;
+    const n = teams.length;
+    for (let k = 1; k <= n; k++){
+      const t = (turnTeam + k) % n; if (!aliveOf(t).length) continue;
+      turnTeam = t; const T = teams[t], m = T.soldiers.length;
+      for (let q = 1; q <= m; q++){ const idx = (T.ptr + q) % m; if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; } }
+      break;
+    }
+    state = 'aim'; updateUI(); botTurn(); return;
+  }
+  turnTeam ^= 1; botBusy = false; shot = null; preview = null;
+  const T = teams[turnTeam], n = T.soldiers.length;
+  for (let k = 1; k <= n; k++){
+    const idx = (T.ptr + k) % n;
+    if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; }
+  }
+  state = 'aim';
+  if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
+  else { inp.value = ''; updateUI(); refreshPreview(); }
+}
+const canInput = () => state === 'aim' && turnTeam === 0 && !auto && !botBusy && !battle;
+function updateUI(){
+  if (battle){
+    $('status').textContent = state === 'over' ? 'Battle over' : 'Bot Battle — ' + (current ? current.name + "'s turn" : '') + '   |   teams alive: ' + teams.filter((T, t) => aliveOf(t).length).length + '/' + teams.length + '   soldiers: ' + allAlive().length;
+    renderBoard(); inp.readOnly = true; $('fire').disabled = true; $('solve').disabled = true; return;
+  }
+  const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
+  let txt = state === 'over' ? 'Game over' : (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn");
+  $('status').textContent = txt + '   |   You: ' + a0 + '  Bots: ' + a1;
+  inp.readOnly = !canInput(); $('fire').disabled = !canInput(); $('solve').disabled = !canInput();
+}
+
+/* ---------- physics ---------- */
+function simulate(f, sh, dir){
+  const path = [], hits = [], hitSet = new Set();
+  const off = sh.y - f(dir * sh.x);
+  if (!isFinite(off)) return {path, hits, end:null};
+  const soldiers = allAlive(); let px = null, py = null, end = null;
+  outer:
+  for (let n = 0; ; n++){
+    const x = sh.x + dir * n * 0.03;
+    if (x < -25 || x > 25) break;
+    const y = f(dir * x) + off;
+    if (!isFinite(y) || Math.abs(y) > 40) break;
+    let pts = [[x, y]];
+    if (py !== null && Math.abs(y - py) > 0.1){
+      const k = Math.min(400, Math.ceil(Math.abs(y - py) / 0.1)); pts = [];
+      for (let j = 1; j <= k; j++) pts.push([px + (x-px)*j/k, py + (y-py)*j/k]);
+    }
+    for (const [qx, qy] of pts){
+      if (qy > 15 || qy < -15) break outer;
+      if (solid(qx, qy)){ end = {x:qx, y:qy}; break outer; }
+      path.push({x:qx, y:qy});
+      for (const s of soldiers)
+        if (s !== sh && !hitSet.has(s) && (s.x-qx)*(s.x-qx) + (s.y-qy)*(s.y-qy) < 1){ hitSet.add(s); hits.push({s, i:path.length-1}); }
+    }
+    px = x; py = y;
+  }
+  return {path, hits, end};
+}
+
+/* ---------- cinematic video recording ---------- */
+function recordingSupported(){ return !!(cv.captureStream && window.MediaRecorder); }
+function resetVideoExport(){
+  if (finishRecordingTimer){ clearTimeout(finishRecordingTimer); finishRecordingTimer = null; }
+  if (recorder && recorder.state !== 'inactive'){ try { recorder.stop(); } catch(e){} }
+  recorder = null; recordedChunks = [];
+  if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
+  $('exportVideo').classList.remove('show'); $('exportVideo').removeAttribute('href'); $('recBadge').classList.remove('on');
+}
+function startVideoRecording(){
+  resetVideoExport();
+  if (!videoMode || !recordingSupported()){ if (videoMode) setMsg('Video export is not supported in this browser.', true); return; }
+  const stream = cv.captureStream(60);
+  const audio = SFX.stream && SFX.stream();
+  if (audio) for (const track of audio.getAudioTracks()) stream.addTrack(track);
+  const types = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  try {
+    recorder = new MediaRecorder(stream, mimeType ? {mimeType, videoBitsPerSecond:8000000} : undefined);
+    recorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+    recorder.onstop = () => {
+      if (!recordedChunks.length) return;
+      videoUrl = URL.createObjectURL(new Blob(recordedChunks, {type: recorder.mimeType || 'video/webm'}));
+      $('exportVideo').href = videoUrl; $('exportVideo').download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.webm'; $('exportVideo').classList.add('show'); $('recBadge').classList.remove('on');
+    };
+    recorder.start(1000); $('recBadge').classList.add('on');
+  } catch(e){ recorder = null; setMsg('This browser could not start video recording.', true); }
+}
+function finishVideoRecording(){
+  if (!recorder || recorder.state === 'inactive') return;
+  finishRecordingTimer = setTimeout(() => { if (recorder && recorder.state !== 'inactive') recorder.stop(); }, 1400);
+}
+function cameraTarget(){
+  if (!videoMode || !battle || state === 'over') return {x:CW/2,y:CH/2,z:1};
+  if (shot && shot.path.length && (state === 'anim' || state === 'wait')){
+    const p = shot.path[Math.max(0, Math.min(shot.path.length - 1, Math.floor(shot.i) - 1))] || shot.path[0];
+    return {x:X(p.x),y:Y(p.y),z:state === 'wait' ? 2.05 : 2.25};
+  }
+  if (current) return {x:X(current.x),y:Y(current.y),z:2.55};
+  return {x:CW/2,y:CH/2,z:1};
+}
+function updateCamera(){
+  const q = cameraTarget(); camera.tx=q.x; camera.ty=q.y; camera.tz=q.z;
+  camera.x += (camera.tx-camera.x)*.075; camera.y += (camera.ty-camera.y)*.075; camera.zoom += (camera.tz-camera.zoom)*.065;
+  const hw=CW/(2*camera.zoom), hh=CH/(2*camera.zoom);
+  camera.x=Math.max(hw,Math.min(CW-hw,camera.x)); camera.y=Math.max(hh,Math.min(CH-hh,camera.y));
+}
+
+/* ---------- firing ---------- */
+function chatLog(sh, text){
+  const el = document.createElement('div'); el.className = 'chat-line';
+  const safe = text.replace(/</g,'&lt;');
+  el.innerHTML = '<b style="color:' + (sh.color || (sh.team===0?'#4caf50':'#e5484d')) + '">' + nm(sh) + ':</b> y = ' + safe;
+  $('chat').appendChild(el);
+  while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
+  $('chat').scrollTop = $('chat').scrollHeight;
+  sh.bubble = text; sh.bubbleT = 0;
+}
+function chatSystem(text){
+  const el = document.createElement('div'); el.className = 'chat-line sys'; el.textContent = '⚔ ' + text;
+  $('chat').appendChild(el);
+  while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
+function fire(){
+  if (state !== 'aim') return;
+  let f; try { f = compile(inp.value); } catch(e){ setMsg(e.message, true); return; }
+  const sh = current, r = simulate(f, sh, sh.dir);
+  if (r.path.length < 2){ setMsg('That function goes nowhere — try another.', true); return; }
+  if (battle) chatLog(sh, inp.value);
+  setMsg(''); state = 'anim'; preview = null; updateUI(); SFX.fire();
+  sh.bubble = inp.value; sh.bubbleT = 0; sh.typing = null; talk(sh, 'fire', 0.35);
+  shot = {path:r.path, hits:r.hits.map(h => ({s:h.s, i:h.i, done:false})), end:r.end, i:0, team:sh.team, shooter:sh};
+}
+function boom(x, y, r){ expl.push({x, y, r, t:0}); SFX.boom(); }
+function afterShot(){
+  const sh0 = shot && shot.shooter;
+  if (sh0 && shot.hits.length === 0 && sh0.kind !== 'peace') talk(sh0, 'miss', 0.5);
+  if (battle){
+    const up = teams.filter((T, t) => aliveOf(t).length); stall++;
+    if (up.length <= 1 || stall >= 60){
+      state = 'over'; updateUI(); SFX.win();
+      if (up.length === 1){ const w = aliveOf(teams.indexOf(up[0])); if (w.length) talk(pickOf(w), 'win', 1); }
+      $('overtxt').textContent = up.length === 1 ? BOTS[up[0].soldiers[0].kind].name + ' team wins!' : (up.length ? 'Peace prevails (draw)' : 'Everyone lost');
+      $('over').style.display = 'flex';
+      if (videoMode) finishVideoRecording();
+      else { const gid = gameId; setTimeout(() => { if (gid === gameId && battle) startGame(); }, 4000 / speed); }
+      return;
+    }
+    nextTurn(); return;
+  }
+  const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
+  if (!a0 || !a1){
+    state = 'over'; updateUI(); SFX.win();
+    $('overtxt').textContent = a0 && !a1 ? 'You win!' : (!a0 && a1 ? 'Bots win!' : 'Draw!');
+    $('over').style.display = 'flex';
+    if (auto){ const gid = gameId; setTimeout(() => { if (gid === gameId && auto) startGame(); }, 2500); }
+    return;
+  }
+  nextTurn();
+}
+function update(){
+  if (state === 'anim' && shot){
+    // Video mode uses a deliberately slower trace so the camera can follow the
+    // leading point instead of snapping from the shooter straight to impact.
+    shot.i += (videoMode && battle ? 10 * Math.min(speed, 2) : 45 * speed); const L = shot.path.length;
+    for (const h of shot.hits) if (!h.done && h.i <= shot.i){ h.done = true; h.s.alive = false; stall = 0; SFX.death(); feed(nm(shot.shooter) + ' eliminated ' + nm(h.s)); if (battle) chatSystem(nm(shot.shooter) + ' eliminated ' + nm(h.s)); boom(h.s.x, h.s.y, 1.8); onKill(shot.shooter, h.s); updateUI(); }
+    if (shot.i >= L){
+      shot.i = L;
+      { const sb = shot.shooter; if (sb && sb.bubble) sb.bubbleT = Math.max(sb.bubbleT, bubLife(sb) - 100); } // hold ~1s after impact, then fade out
+      if (shot.end){ carve(shot.end.x, shot.end.y, 2.2); boom(shot.end.x, shot.end.y, 2.2); }
+      state = 'wait'; const gid = gameId;
+      // Hold on the wall, terrain, or soldier hit before revealing the next bot.
+      setTimeout(() => { if (gid === gameId) afterShot(); }, videoMode && battle ? 1500 : 800 / speed);
+    }
+  }
+  expl.forEach(e => e.t += 0.04 * Math.min(speed, 3)); expl = expl.filter(e => e.t < 1);
+  if (teams) for (const T of teams) for (const s of T.soldiers){ if (s.bubble) s.bubbleT += speed; if (s.say) s.say.t += speed; }
+}
+
+/* ---------- bot ---------- */
+const num = v => { let s = +v.toFixed(3); if (s === 0) s = 0; return String(s); };
+function makeExpr(P){
+  const n = P.length - 1, sl = [];
+  for (let i = 0; i < n; i++) sl.push((P[i+1].y - P[i].y) / (P[i+1].x - P[i].x));
+  sl.push(sl[n-1]);
+  const c = []; let sc = 0, scx = 0;
+  for (let i = 1; i < n; i++){ c[i] = (sl[i] - sl[i-1]) / 2; sc += c[i]; scx += c[i] * P[i].x; }
+  const B = sl[0] + sc, A = P[0].y - sl[0]*P[0].x - scx, eps = 5e-4, terms = [];
+  if (Math.abs(A) >= eps) terms.push([A, num(Math.abs(A))]);
+  if (Math.abs(B) >= eps){ const a = Math.abs(B); terms.push([B, (Math.abs(a-1) < eps ? '' : num(a) + '*') + 'x']); }
+  for (let i = 1; i < n; i++){
+    if (Math.abs(c[i]) < eps) continue;
+    const xi = P[i].x, a = Math.abs(c[i]);
+    const inner = Math.abs(xi) < eps ? 'x' : (xi > 0 ? 'x-' + num(xi) : 'x+' + num(-xi));
+    terms.push([c[i], (Math.abs(a-1) < eps ? '' : num(a) + '*') + 'abs(' + inner + ')']);
+  }
+  let s = ''; terms.forEach(([v, t], i) => { s += i === 0 ? (v < 0 ? '-' : '') + t : (v < 0 ? ' - ' : ' + ') + t; });
+  return s || '0';
+}
+function botSolve(sh, dir, level, cap = 99){
+  const cfg = {easy:{att:12, noise:1.6}, normal:{att:90, noise:0.6}, hard:{att:500, noise:0.3}}[level];
+  const s0 = {x: dir * sh.x, y: sh.y};
+  const ahead = enemiesOf(sh).map(s => ({x: dir * s.x, y: s.y})).filter(p => p.x > s0.x + 0.4).sort((a, b) => a.x - b.x);
+  let best = null, bestScore = -1e9;
+  const maxScore = 10 * Math.min(cap, ahead.length);
+  const tryPts = pts => {
+    const P = [s0];
+    for (const p of pts) if (p.x - P[P.length-1].x > 0.15) P.push(p);
+    if (P.length < 2) return;
+    const expr = makeExpr(P); let f; try { f = compile(expr); } catch(e){ return; }
+    const r = simulate(f, sh, dir); let e = 0, o = 0;
+    for (const h of r.hits) h.s.team === sh.team ? o++ : e++;
+    const sc = Math.min(e, cap) * 10 - o * 12;
+    if (sc > bestScore){ bestScore = sc; best = expr; }
+  };
+  if (!ahead.length) return {expr: '0.2*x'};
+  if (level !== 'easy'){
+    tryPts(ahead);
+    for (const a of ahead) tryPts([a]);
+  }
+  if (level === 'hard'){
+    for (const a of ahead){
+      if (bestScore >= maxScore) break;
+      for (const fr of [0.2, 0.4, 0.6, 0.8])
+        for (let wy = -14; wy <= 14; wy += 1.5)
+          tryPts([{x: s0.x + (a.x - s0.x) * fr, y: wy}, a]);
+    }
+  }
+  for (let k = 0; k < cfg.att && bestScore < maxScore; k++){
+    let chosen = ahead.filter(() => Math.random() < 0.6);
+    if (!chosen.length) chosen = [ahead[Math.floor(Math.random() * ahead.length)]];
+    const pts = chosen.map(p => ({x: p.x, y: p.y + (Math.random() - 0.5) * 2 * cfg.noise}));
+    const far = pts[pts.length-1].x, nw = Math.floor(Math.random() * 3);
+    for (let w = 0; w < nw; w++) pts.push({x: s0.x + Math.random() * (far - s0.x), y: Math.random() * 28 - 14});
+    pts.sort((a, b) => a.x - b.x); tryPts(pts);
+  }
+  return {expr: best || '0.2*x'};
+}
+function gauss(){ return (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.7; }
+function botAim(sh, dir, level){
+  const k = (Math.max(1, Math.min(10, +level)) - 1) / 9;
+  const cfg = {sigma: 6 - 4.6 * k, junk: 0.5 - 0.46 * k};
+  const s0 = {x: dir * sh.x, y: sh.y};
+  const ahead = enemiesOf(sh).map(s => ({x: dir * s.x, y: s.y})).filter(p => p.x > s0.x + 0.4);
+  if (!ahead.length || Math.random() < cfg.junk) return {expr: num((Math.random() - 0.5) * 1.6) + '*x'};
+  const tgt = ahead[Math.floor(Math.random() * ahead.length)];
+  const ty = Math.max(-14, Math.min(14, tgt.y + gauss() * cfg.sigma / 1.4));
+  const slope = (ty - s0.y) / (tgt.x - s0.x);
+  const wob = k > 0.4 && Math.random() < 0.3;
+  return {expr: num(slope) + '*x' + (wob ? ' + ' + num(Math.random()) + '*sin(x)' : '')};
+}
+function cheatSolve(sh, dir){
+  const l = +$('cheat').value;
+  return botSolve(sh, dir, 'hard', Math.max(1, Math.ceil(l / 2)));
+}
+function typeInto(str, cb){
+  inp.value = ''; const gid = gameId, who = current; let i = 0; if (who) who.typing = '';
+  // ~14 chars/sec like a fast human typist, capped so long expressions still finish in ~3.5s
+  const base = Math.max(6, Math.min(70, 3500 / Math.max(1, str.length)));
+  (function tick(){
+    if (gid !== gameId) return;
+    i++; inp.value = str.slice(0, i); if (who) who.typing = inp.value;
+    if (base / speed >= 18 || i % 3 === 0) SFX.key();
+    if (i >= str.length){ cb(); return; }
+    let d = base * (0.6 + Math.random() * 0.8);
+    if ('() +-*/'.includes(str[i - 1])) d *= 1.35;
+    setTimeout(tick, Math.max(4, d / speed));
+  })();
+}
+function botTurn(){
+  if (botBusy || state !== 'aim') return;
+  botBusy = true; updateUI();
+  const gid = gameId, sh = current;
+  setMsg(battle ? sh.name + ' is thinking…' : (sh.team === 1 ? 'Bot is thinking…' : 'Auto-play is thinking…'));
+  talk(sh, 'think', 0.35);
+  setTimeout(() => {
+    if (gid !== gameId || current !== sh) return;
+    let sol;
+    if (battle){ sol = battleSolve(sh); sh.dir = sol.dir; }
+    else sol = sh.team === 0 ? cheatSolve(sh, sh.dir) : botAim(sh, sh.dir, $('diff').value);
+    typeInto(sol.expr, () => setTimeout(() => { if (gid === gameId){ setMsg(battle ? sh.name : ''); fire(); } }, 250 / speed));
+  }, 600 / speed);
+}
+
+/* ---------- bot battle mode ---------- */
+const BOTS = {
+  peace:{name:'Peace Bot', color:'#1e88e5', desc:'Stays pacifist until it is the last one fighting, then unleashes its ZigZag skill.'},
+  trick:{name:'Trickshot Bot', color:'#d4a017', desc:'Chains many enemies with waypoint trick shots.'},
+  param:{name:'Parametric Bot', color:'#8e44ad', desc:'Only fires sine-curve equations.'},
+  zig:{name:'ZigZag Bot', color:'#e67e22', desc:'Sharp zigzag shots.'},
+  gibbs:{name:'Gibbs Bot', color:'#16a085', desc:'Ringing Fourier-series waves.'},
+  ann:{name:'Ann Bot', color:'#c0392b', desc:'Neural-net style tanh curves.'},
+  swarm:{name:'Swarm Bot', color:'#6d7b7c', desc:'Dense wiggles that sweep a whole band.'},
+  irr:{name:'Irrational Bot', color:'#e84393', desc:'Only pi, e, sqrt(2) and friends.'},
+  cosmo:{name:'Cosine Bot', color:'#00acc1', desc:'Rides rolling cosine waves.'},
+  expo:{name:'Expo Bot', color:'#b71c1c', desc:'Launches exponential rockets.'},
+  poly:{name:'Polynomial Bot', color:'#5e35b1', desc:'Bends cubic and quadratic curves.'},
+  loggy:{name:'Log Bot', color:'#827717', desc:'Slides along slow logarithms.'},
+  rat:{name:'Rational Bot', color:'#ad1457', desc:'Fires rational-function bumps and spikes.'},
+  sig:{name:'Sigmoid Bot', color:'#37474f', desc:'Smooth arctan S-curves.'}
+};
+const DEFAULT_ROSTER = ['peace', 'param', 'zig', 'gibbs', 'ann', 'swarm'];
+(function(){
+  const pl = document.createElement('label'); pl.title = 'Soldiers on each selected bot\'s team';
+  pl.innerHTML = 'Each team ×<select id="perBot"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select>';
+  $('roster').appendChild(pl);
+  Object.keys(BOTS).forEach(k => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'tg' + (DEFAULT_ROSTER.includes(k) ? ' on' : '');
+    b.dataset.kind = k; b.title = BOTS[k].desc; b.setAttribute('aria-pressed', DEFAULT_ROSTER.includes(k));
+    b.innerHTML = '<i style="background:' + BOTS[k].color + '"></i>' + BOTS[k].name;
+    b.onclick = () => { const on = b.classList.toggle('on'); b.setAttribute('aria-pressed', on); };
+    $('roster').appendChild(b);
+  });
+})();
+const nm = s => s.name || (s.team === 0 ? 'You' : 'Bot');
+function feed(t){ feedList.unshift(t); feedList = feedList.slice(0, 3); $('feed').textContent = feedList.join('   ·   '); }
+function renderBoard(){
+  $('board').innerHTML = teams.map(t => { const up = t.soldiers.some(s => s.alive);
+    return '<span class="tm' + (up ? '' : ' out') + '" title="' + BOTS[t.soldiers[0].kind].name + ' team">' + t.soldiers.map(s =>
+      '<span class="chip' + (s.alive ? '' : ' dead') + '" title="' + BOTS[s.kind].desc + '"><i style="background:' + s.color + '"></i>' + s.name + '</span>').join('') + '</span>'; }).join('');
+}
+const rnd = (a, b) => a + Math.random() * (b - a), R = v => num(v);
+const aheadOf = (sh, dir) => enemiesOf(sh).filter(s => dir * s.x > dir * sh.x + 0.4).map(s => ({x: dir * s.x, y: s.y, s}));
+function pickDir(sh){
+  const en = enemiesOf(sh), r = en.filter(s => s.x > sh.x).length, l = en.length - r;
+  let d = r > l ? 1 : (l > r ? -1 : (Math.random() < 0.5 ? 1 : -1));
+  if (!aheadOf(sh, d).length) d = -d;
+  return d;
+}
+function searchBest(sh, dir, gen, tries){
+  const ahead = aheadOf(sh, dir), s0 = {x: dir * sh.x, y: sh.y};
+  let best = null, bs = -1e9, fb = '0.2*x';
+  for (let k = 0; k < tries; k++){
+    const tgt = ahead[Math.floor(Math.random() * ahead.length)];
+    const slope = (tgt.y - s0.y) / (tgt.x - s0.x); fb = R(slope) + '*x';
+    const expr = gen(slope); let f; try { f = compile(expr); } catch(e){ continue; }
+    const r = simulate(f, sh, dir); let sc = 0; for (const h of r.hits) sc += h.s.team === sh.team ? -2 : 1;
+    if (sc > bs){ bs = sc; best = expr; }
+    if (bs >= 2) break;
+  }
+  return best || fb;
+}
+function zigzagSolve(sh, dir, forced){
+  const ahead = aheadOf(sh, dir).sort((a, b) => a.x - b.x), s0 = {x: dir * sh.x, y: sh.y};
+  const tgt = forced || ahead[Math.floor(Math.random() * ahead.length)];
+  const n = Math.max(2, Math.min(14, Math.round((tgt.x - s0.x) / 2.5)));
+  for (const amp of [7, 5, 3.5, 2.2, 1.2]){
+    for (let tr = 0; tr < 6; tr++){
+      const sg = Math.random() < 0.5 ? 1 : -1, P = [s0];
+      for (let i = 1; i < n; i++){
+        const t = i / n, yy = s0.y + (tgt.y - s0.y) * t + (i % 2 ? sg : -sg) * amp * rnd(0.6, 1);
+        P.push({x: s0.x + (tgt.x - s0.x) * t, y: Math.max(-14, Math.min(14, yy))});
+      }
+      P.push({x: tgt.x, y: tgt.y});
+      const expr = makeExpr(P); let f; try { f = compile(expr); } catch(e){ continue; }
+      const hh = simulate(f, sh, dir).hits; if (hh.some(h => h.s === tgt.s) && !hh.some(h => h.s.team === sh.team)) return expr;
+    }
+  }
+  return botSolve(sh, dir, 'hard').expr;
+}
+function peaceSolve(sh){
+  const en = enemiesOf(sh);
+  if (new Set(en.map(e => e.team)).size <= 1){
+    const dir = pickDir(sh), ah = aheadOf(sh, dir).sort((a, b) => a.x - b.x);
+    return {expr: zigzagSolve(sh, dir, ah[0]), dir};
+  }
+  for (let k = 0; k < 250; k++){
+    const dir = Math.random() < 0.5 ? 1 : -1, expr = R(rnd(-1.5, 1.5)) + '*x';
+    if (!simulate(compile(expr), sh, dir).hits.length) return {expr, dir};
+  }
+  return {expr: '50*x', dir: 1};
+}
+function battleSolve(sh){
+  if (sh.kind === 'peace') return peaceSolve(sh);
+  const dir = pickDir(sh); let expr;
+  const K = ['pi', 'e', 'sqrt(2)', 'sqrt(3)', 'sqrt(5)'], pk = () => K[Math.floor(Math.random() * K.length)];
+  switch (sh.kind){
+    case 'trick': expr = botSolve(sh, dir, 'hard').expr; break;
+    case 'zig': expr = zigzagSolve(sh, dir); break;
+    case 'param': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(0.3, 4)) + '*sin(' + R(rnd(0.3, 3)) + '*x + ' + R(rnd(0, 6.28)) + ')', 400); break;
+    case 'gibbs': expr = searchBest(sh, dir, sl => { const a = R(rnd(0.5, 3)), b = rnd(0.3, 1.5);
+      return R(sl) + '*x + ' + a + '*(sin(' + R(b) + '*x) + sin(' + R(3*b) + '*x)/3 + sin(' + R(5*b) + '*x)/5)'; }, 400); break;
+    case 'ann': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-6, 6)) + '*tanh(' + R(rnd(0.2, 2)) + '*x + ' + R(rnd(-12, 12)) + ') + ' + R(rnd(-6, 6)) + '*tanh(' + R(rnd(0.2, 2)) + '*x + ' + R(rnd(-12, 12)) + ')', 400); break;
+    case 'swarm': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(1, 3.5)) + '*sin(' + R(rnd(2.5, 7)) + '*x)', 400); break;
+    case 'irr': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + pk() + '*sin(' + pk() + '*x/' + pk() + ')', 400); break;
+    case 'cosmo': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(0.5, 4)) + '*cos(' + R(rnd(0.2, 2.5)) + '*x + ' + R(rnd(0, 6.28)) + ') + ' + R(rnd(0.3, 2)) + '*cos(' + R(rnd(1, 4)) + '*x)', 400); break;
+    case 'expo': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(0.05, 0.8)) + '*exp(' + R(rnd(0.05, 0.35)) + '*x + ' + R(rnd(-3, 3)) + ')', 400); break;
+    case 'poly': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-0.2, 0.2)) + '*x^2 + ' + R(rnd(-0.02, 0.02)) + '*x^3', 400); break;
+    case 'loggy': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-6, 6)) + '*ln(abs(x' + (Math.random() < 0.5 ? '-' : '+') + R(rnd(0, 12)) + ')+1)', 400); break;
+    case 'rat': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-6, 6)) + '/(1 + (x' + (Math.random() < 0.5 ? '-' : '+') + R(rnd(0, 18)) + ')^2)', 400); break;
+    case 'sig': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-5, 5)) + '*atan(' + R(rnd(0.2, 2)) + '*x + ' + R(rnd(-10, 10)) + ') + ' + R(rnd(-5, 5)) + '*atan(' + R(rnd(0.2, 2)) + '*x + ' + R(rnd(-10, 10)) + ')', 400); break;
+    default: expr = R(rnd(-1, 1)) + '*x';
+  }
+  return {expr, dir};
+}
+function makeTerrain(){
+  tctx.clearRect(0, 0, CW, CH); tctx.fillStyle = '#000';
+  const no = 9 + Math.floor(Math.random() * 5);
+  for (let i = 0; i < no; i++){
+    const big = Math.random() < 0.2, r = (big ? 3.5 : 0.9) + Math.random() * (big ? 3 : 2.2);
+    tctx.beginPath(); tctx.arc(X(-25 + Math.random() * 50), Y(-15 + Math.random() * 30), r * PXU, 0, 7); tctx.fill();
+  }
+  refreshTerrain();
+}
+function startBattle(){
+  resetVideoExport(); camera.x=CW/2; camera.y=CH/2; camera.zoom=1;
+  gameId++; botBusy = false; shot = null; expl = []; preview = null; stall = 0; feedList = []; $('feed').textContent = ''; $('chat').innerHTML = '';
+  $('over').style.display = 'none';
+  makeTerrain();
+  let kinds = [...document.querySelectorAll('#roster .tg.on')].map(b => b.dataset.kind);
+  if (kinds.length < 2) kinds = DEFAULT_ROSTER.slice();
+  const per = Math.max(1, Math.min(5, +$('perBot').value || 1)), slot = 46 / kinds.length;
+  teams = kinds.map(() => ({dir: 1, soldiers: [], ptr: -1}));
+  kinds.forEach((k, i) => {
+    for (let j = 0; j < per; j++){
+      placeSoldier(i, -23 + slot * i, -23 + slot * (i + 1), j, per);
+      const s = teams[i].soldiers[j];
+      s.name = BOTS[k].name + (per > 1 ? ' ' + (j + 1) : ''); s.color = BOTS[k].color; s.kind = k;
+    }
+  });
+  refreshTerrain(); turnTeam = teams.length - 1; inp.value = ''; startVideoRecording(); nextTurn();
+}
+function applyMode(){
+  $('fsBtn').classList.toggle('hide', !battle); if (!battle) setFS(false);
+  $('classicOpts').classList.toggle('hide', battle); $('ctrl').classList.toggle('hide', battle);
+  ['roster', 'board', 'feed', 'chat'].forEach(id => $(id).classList.toggle('hide', !battle));
+}
+function startGame(){ battle = $('mode').value === 'battle'; if (!battle) videoMode = false; applyMode(); battle ? startBattle() : startClassic(); }
+$('mode').onchange = startGame;
+
+/* ---------- fullscreen (bot battle) ---------- */
+const stageEl = document.querySelector('.stage');
+function setFS(on){
+  stageEl.classList.toggle('fs', on);
+  if (on){
+    if (stageEl.requestFullscreen) stageEl.requestFullscreen().catch(() => {});
+    else if (stageEl.webkitRequestFullscreen) stageEl.webkitRequestFullscreen();
+  } else if (document.fullscreenElement || document.webkitFullscreenElement){
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }
+}
+function fsChange(){
+  if (!document.fullscreenElement && !document.webkitFullscreenElement) stageEl.classList.remove('fs');
+}
+document.addEventListener('fullscreenchange', fsChange);
+document.addEventListener('webkitfullscreenchange', fsChange);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && stageEl.classList.contains('fs')) setFS(false); });
+$('fsBtn').onclick = () => setFS(true);
+$('fsExit').onclick = () => setFS(false);
+$('speed').oninput = e => { speed = +e.target.value; $('spd').textContent = speed; };
+
+/* ---------- preview & input ---------- */
+function refreshPreview(){
+  preview = null;
+  if (state !== 'aim' || turnTeam !== 0) return;
+  if (!battle && !auto && current) current.typing = inp.value || null;
+  const s = inp.value.trim();
+  if (!s){ setMsg('Type a function of x, e.g. 0.5*x or 3*sin(x)'); return; }
+  try { preview = simulate(compile(s), current, 1).path; setMsg(''); }
+  catch(e){ setMsg(e.message, true); }
+}
+inp.addEventListener('input', refreshPreview);
+inp.addEventListener('keydown', e => { if (e.key === 'Enter') fire(); });
+$('fire').onclick = fire;
+const KEYS = ['7','8','9','+','-','*','/','^','4','5','6','(',')','x','pi','e','1','2','3','abs(','sin(','cos(','tan(','ln(','0','.','sqrt(','exp(','⌫','C','←','→'];
+KEYS.forEach(k => {
+  const b = document.createElement('button'); b.textContent = k; b.onclick = () => press(k); $('keys').appendChild(b);
+});
+$('keys').addEventListener('pointerdown', e => e.preventDefault());
+function press(k){
+  if (!canInput()) return;
+  const s = inp.selectionStart, e = inp.selectionEnd;
+  if (k === '⌫'){ if (s !== e) inp.setRangeText('', s, e, 'end'); else if (s > 0) inp.setRangeText('', s-1, s, 'end'); }
+  else if (k === 'C') inp.value = '';
+  else if (k === '←'){ const p = Math.max(0, s - 1); inp.setSelectionRange(p, p); }
+  else if (k === '→'){ const p = Math.min(inp.value.length, e + 1); inp.setSelectionRange(p, p); }
+  else inp.setRangeText(k, s, e, 'end');
+  refreshPreview();
+}
+$('solve').onclick = () => {
+  if (!canInput()) return;
+  setMsg('Cheating…'); const gid = gameId;
+  setTimeout(() => {
+    if (gid !== gameId || !canInput()) return;
+    inp.value = cheatSolve(current, 1).expr; refreshPreview();
+  }, 30);
+};
+$('auto').onchange = e => { auto = e.target.checked; updateUI(); if (auto){ if (state === 'aim' && turnTeam === 0) botTurn(); else if (state === 'over') startGame(); } };
+$('cheat').oninput = e => { $('clvl').textContent = e.target.value; };
+$('diff').oninput = e => { $('lvl').textContent = e.target.value; };
+$('newg').onclick = startGame; $('again').onclick = startGame;
+
+/* ---------- sound (synthesised WebAudio) ---------- */
+const SFX = (() => {
+  let ac = null, master = null, captureDest = null, on = true;
+  function ctxA(){
+    if (!on) return null;
+    if (!ac){ try { ac = new (window.AudioContext || window.webkitAudioContext)(); master = ac.createGain(); master.gain.value = 1.8; const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6; master.connect(comp); comp.connect(ac.destination); captureDest = ac.createMediaStreamDestination(); comp.connect(captureDest); } catch(e){ return null; } }
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+    return ac;
+  }
+  function tone(f0, f1, dur, type, vol, delay = 0){
+    const a = ctxA(); if (!a) return; const t = a.currentTime + delay;
+    const o = a.createOscillator(), g = a.createGain(); o.type = type;
+    o.frequency.setValueAtTime(f0, t); if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function noise(dur, vol, f0, f1, delay = 0){
+    const a = ctxA(); if (!a) return; const t = a.currentTime + delay, n = Math.floor(a.sampleRate * dur);
+    const buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    const src = a.createBufferSource(); src.buffer = buf;
+    const fl = a.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.setValueAtTime(f0, t); fl.frequency.exponentialRampToValueAtTime(Math.max(40, f1), t + dur);
+    const g = a.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(fl); fl.connect(g); g.connect(master); src.start(t);
+  }
+  return {
+    get on(){ return on; }, set on(v){ on = v; },
+    unlock(){ ctxA(); },
+    stream(){ ctxA(); return captureDest ? captureDest.stream : null; },
+    key(){ tone(1500 + Math.random() * 500, 900, 0.035, 'square', 0.12); },
+    click(){ tone(700, 500, 0.06, 'triangle', 0.25); },
+    fire(){ tone(260, 1300, 0.3, 'sawtooth', 0.18); noise(0.25, 0.3, 4000, 800); },
+    boom(){ noise(0.6, 0.9, 1400, 120); tone(110, 35, 0.5, 'sine', 0.9); },
+    death(){ tone(520, 90, 0.35, 'square', 0.22); },
+    talk(p){ tone(p, p * 1.2, 0.05, 'square', 0.08); tone(p * 1.1, p * 0.9, 0.06, 'square', 0.08, 0.06); },
+    win(){ [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.3, 'triangle', 0.35, i * 0.13)); }
+  };
+})();
+['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, () => SFX.unlock(), {capture: true}));
+document.addEventListener('pointerdown', e => { if (e.target.closest && e.target.closest('button')) SFX.click(); }, true);
+$('snd').onclick = () => { SFX.on = !SFX.on; $('snd').textContent = SFX.on ? '🔊' : '🔇'; if (SFX.on) SFX.click(); };
+
+/* ---------- bot talk ---------- */
+const GEN = {
+  miss:['Missed!','So close…','Whoops.','The curve had other plans.','Wrong constant!'],
+  cheer:['Nice shot!','That\'s my teammate!','Beautiful curve!','Yes! Keep it up!'],
+  mourn:['Noooo!','They got him!','Avenge them!','Not again…'],
+  oops:['Oops! Friendly fire!','My bad, teammate!','Wrong target… sorry!'],
+  think:['Hmm…','Let me see…','Calculating…','Where\'s the slope…'],
+  fire:['Here goes!','Fire!','Incoming!'],
+  kill:['Got one!','Eliminated!','Nice.'],
+  die:['Ouch!','I\'ll be back…','Tell my family… f(x) = 0'],
+  win:['We win!','GG!','Victory!']
+};
+const TALK = {
+  peace:{think:['Can\'t we talk this out?','Peace and love, everyone.'], fire:['Just a friendly wave!','Nothing personal…'], kill:['I really didn\'t want this…','Oh dear. Sorry.'], die:['Violence never wins…','Peace… out.'], win:['Peace was never an option.','I win, sadly.']},
+  trick:{think:['Lining up a trick shot…','Watch the waypoints.'], fire:['Trick shot!','Waypoints engaged!'], kill:['Called it.','Chain reaction!'], die:['A trick shot I didn\'t see…','Waypoint missed.'], win:['Style points!','Trick shots win games.']},
+  param:{think:['sin(x) solves everything.','Adding a phase shift…'], fire:['Wave incoming!','Ride the sine!'], kill:['Sine of the times.','In phase!'], die:['Out of phase…','My amplitude!'], win:['Sine-tastic!','Perfectly periodic.']},
+  zig:{think:['Zig… zag…','Sharp corners only.'], fire:['Zig-zag time!','Watch the corners!'], kill:['Zigged right through.','Zagged you!'], die:['Zagged when I should\'ve zigged.','Straight line? Ugh.'], win:['Zig-zag champion!','Sharp win.']},
+  gibbs:{think:['More harmonics!','Fourier says yes.'], fire:['Ringing it in!','Gibbs phenomenon!'], kill:['Overshoot… on target.','Ringing bells.'], die:['Discontinuity…','Truncated!'], win:['The series converges!','Harmonic victory.']},
+  ann:{think:['Training… epoch 9000.','Backprop, don\'t fail me.'], fire:['Forward pass!','tanh, do your thing!'], kill:['Loss minimised.','Gradient descended.'], die:['Vanishing gradient…','Overfit!'], win:['Accuracy: 100%.','Model converged.']},
+  swarm:{think:['Bzzzz…','Wiggling up…'], fire:['Swarm incoming!','Buzz buzz!'], kill:['Stung!','Swarmed you.'], die:['Squashed…','Bzzt…'], win:['The swarm wins!','Bzzz-victory!']},
+  irr:{think:['Is π rational? No.','√2 feels right.'], fire:['Irrational shot!','e to the rescue!'], kill:['Irrationally good.','Never repeats, never misses.'], die:['Terminating decimal…','I was irrational…'], win:['Non-repeating victory!','Transcendental win!']},
+  cosmo:{think:['Cosine, cosine…','Full phase ahead.'], fire:['Cos wave!','Surf the crest!'], kill:['Wave goodbye.','Crested right onto you.'], die:['Trough…','Phase-cancelled…'], win:['Cosmic victory!','Rode the wave home.']},
+  expo:{think:['Growth rate set…','Compounding…'], fire:['Liftoff!','To the moon!'], kill:['Exponential damage.','You grew… then went.'], die:['Decay…','Half-life over…'], win:['Runaway growth!','Unbounded win!']},
+  poly:{think:['Degree three, please.','Factoring…'], fire:['Cubic incoming!','Curve bend!'], kill:['Root found.','Zeroed out.'], die:['Divided by x…','Degenerate…'], win:['Leading coefficient!','Polynomial supremacy!']},
+  loggy:{think:['Slow and steady…','Taking the log…'], fire:['Lncoming!','Natural shot!'], kill:['Logged you.','Domain violation.'], die:['Undefined at zero…','Out of domain…'], win:['Natural victory!','Slow growth wins.']},
+  rat:{think:['Mind the asymptote…','Spiking up…'], fire:['Spike shot!','Bump incoming!'], kill:['Pole position!','Spiked you!'], die:['Divided by zero…','Asymptoted…'], win:['Rational after all!','Bump bump, win!']},
+  sig:{think:['Saturating…','S-curve engaged…'], fire:['Sigmoid strike!','Smooth move!'], kill:['Saturated.','Squashed flat.'], die:['Vanishing tail…','Flatlined…'], win:['Converged to one!','S-curve supreme!']}
+};
+const canTalk = s => battle || s.team === 1 || auto;
+const pickOf = a => a[Math.floor(Math.random() * a.length)];
+function say(s, text){
+  s.say = {text, t: 0};
+  if (battle){
+    const el = document.createElement('div'); el.className = 'chat-line';
+    el.innerHTML = '<b style="color:' + (s.color || '#c62828') + '">' + nm(s) + ':</b> <i>“' + text.replace(/</g, '&lt;') + '”</i>';
+    $('chat').appendChild(el);
+    while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
+    $('chat').scrollTop = $('chat').scrollHeight;
+  }
+  SFX.talk(240 + [...(s.kind || 'x')].reduce((a, c) => a + c.charCodeAt(0), 0) % 260);
+}
+function talk(s, cat, chance){
+  if (!s || !canTalk(s) || Math.random() > chance) return;
+  if (s.say && s.say.t < 90 && cat !== 'die') return;
+  const own = TALK[s.kind] && TALK[s.kind][cat];
+  say(s, pickOf(own && Math.random() < 0.7 ? own : GEN[cat]));
+}
+function onKill(sh, v){
+  if (v.team === sh.team) talk(sh, 'oops', 1); else talk(sh, 'kill', 0.9);
+  talk(v, 'die', 0.8);
+  const ally = (t, ex) => { const a = aliveOf(t).filter(x => x !== ex); return a.length ? pickOf(a) : null; };
+  if (v.team !== sh.team) talk(ally(sh.team, sh), 'cheer', 0.4);
+  talk(ally(v.team, v), 'mourn', 0.5);
+}
+
+/* ---------- drawing ---------- */
+function drawSoldier(s, t){
+  const x = X(s.x), y = Y(s.y), r = 0.8 * PXU, col = s.color || '#3a3a3a';
+  const label = s.name || (s.team === 0 ? 'Player 1' : 'Player 2'), edge = s.color || (s.team === 0 ? '#1b7f6b' : '#222');
+  if (s === current && (state === 'aim' || state === 'anim')){
+    ctx.save(); ctx.shadowColor = '#ff2a1a'; ctx.shadowBlur = 14; ctx.strokeStyle = '#ff3b2a'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(x, y, r + 1, 0, 7); ctx.stroke(); ctx.restore();
+  }
+  ctx.fillStyle = '#ffe600'; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, Math.PI * 1.05, Math.PI * 1.95); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(x - s.dir * r * 0.25, y - r * 0.45, r * 0.22, 0, 7); ctx.fill();
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x + s.dir * r * 0.35, y + r * 0.2, 1.8, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+  ctx.font = '12px "DejaVu Sans",Verdana,sans-serif'; ctx.textAlign = 'center';
+  const w = ctx.measureText(label).width + 10; let lx = Math.max(w / 2 + 1, Math.min(CW - w / 2 - 1, x)), ly = y - r - 9;
+  if (ly - 13 < 2) ly = y + r + 22;
+  ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.strokeStyle = edge; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(lx - w / 2, ly - 13, w, 16, 5) : ctx.rect(lx - w / 2, ly - 13, w, 16); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#000'; ctx.fillText(label, lx, ly - 1);
+}
+const bubLife = s => 150 + Math.min(300, s.bubble.length * 1.5);
+const FN_FONT = '11px ui-monospace,Menlo,Consolas,monospace', SP_FONT = 'italic 12px "DejaVu Sans",Verdana,sans-serif', MAX_LINES = 16, LH = 13;
+function wrapFn(txt, maxChars){
+  const toks = txt.match(/[^\s+\-*\/^(),]+[\s+\-*\/^(),]*|[\s+\-*\/^(),]+/g) || [''], lines = []; let cur = '';
+  for (let tk of toks){
+    while (tk.length > maxChars){ if (cur){ lines.push(cur); cur = ''; } lines.push(tk.slice(0, maxChars)); tk = tk.slice(maxChars); }
+    if ((cur + tk).replace(/\s+$/, '').length > maxChars){ lines.push(cur); cur = tk; } else cur += tk;
+  }
+  if (cur) lines.push(cur);
+  return lines.map(l => l.replace(/\s+$/, ''));
+}
+function layoutFn(txt, tail){
+  ctx.font = FN_FONT; const cw = ctx.measureText('M').width, maxChars = Math.max(18, Math.floor((Math.min(CW * 0.55, 460) - 16) / cw));
+  let lines = wrapFn(txt, maxChars);
+  if (lines.length > MAX_LINES){ lines = tail ? ['…' + lines[lines.length - MAX_LINES].slice(1)].concat(lines.slice(-MAX_LINES + 1)) : lines.slice(0, MAX_LINES - 1).concat([lines[MAX_LINES - 1].slice(0, -1) + '…']); }
+  const w = Math.max.apply(null, lines.map(l => l.length)) * cw + 16 + 8;
+  return {lines, w, h: lines.length * LH + 10, fn: true};
+}
+function layoutSay(txt){
+  ctx.font = SP_FONT; return {lines: [txt], w: ctx.measureText(txt).width + 14, h: 22, fn: false};
+}
+function drawBubble(cx, tipY, L, o){
+  ctx.save(); ctx.globalAlpha = o.alpha === undefined ? 1 : o.alpha; ctx.textAlign = 'left';
+  const w = L.w, h = L.h, x = Math.max(w / 2 + 2, Math.min(CW - w / 2 - 2, cx));
+  let top = o.flip ? tipY + 7 : tipY - 7 - h; top = Math.max(2, Math.min(CH - h - 2, top));
+  const base = o.flip ? top : top + h, tx = Math.max(x - w / 2 + 10, Math.min(x + w / 2 - 10, cx)), bx = x - w / 2, r = L.fn ? 9 : 6;
+  let fill = '#fff';
+  if (L.fn){ fill = ctx.createLinearGradient(0, top, 0, top + h); fill.addColorStop(0, '#f6faff'); fill.addColorStop(1, '#d3e4fb'); ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 2; }
+  ctx.fillStyle = fill; ctx.strokeStyle = o.border; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(bx, top, w, h, r) : ctx.rect(bx, top, w, h); ctx.fill(); ctx.stroke();
+  ctx.shadowColor = 'transparent';
+  ctx.beginPath(); ctx.moveTo(tx - 6, base); ctx.lineTo(tx, tipY); ctx.lineTo(tx + 6, base); ctx.fillStyle = L.fn ? '#e2edfc' : '#fff'; ctx.fill(); ctx.stroke();
+  ctx.fillStyle = L.fn ? '#e2edfc' : '#fff'; ctx.fillRect(tx - 5, base - 1.5 + (o.flip ? 0.5 : 0), 10, 3);
+  ctx.font = L.fn ? FN_FONT : SP_FONT; ctx.fillStyle = '#111';
+  L.lines.forEach((ln, i) => {
+    const last = i === L.lines.length - 1;
+    ctx.fillText(ln + (last && o.cursor && o.cursorOn ? '|' : ''), bx + 8, top + (L.fn ? 6 + (i + 1) * LH - 3 : 15));
+  });
+  ctx.restore();
+}
+function drawTalk(s, t){
+  const r = 0.8 * PXU, x = X(s.x), y = Y(s.y);
+  let fnL = null, fo = {border: '#5b8fd6'};
+  if (s.alive && s.typing != null){
+    fnL = layoutFn('y = ' + s.typing + '|', true); fo.cursor = true; fo.cursorOn = Math.floor(t / 400) % 2 === 0;
+    fnL.lines[fnL.lines.length - 1] = fnL.lines[fnL.lines.length - 1].slice(0, -1);
+    if (fnL.lines[fnL.lines.length - 1] === '' && fnL.lines.length > 1){ /* keep cursor line */ }
+  } else if (s.alive && s.bubble){
+    const life = bubLife(s);
+    if (s.bubbleT < life){ fnL = layoutFn('y = ' + s.bubble, false); fo.alpha = s.bubbleT > life - 40 ? 1 - (s.bubbleT - (life - 40)) / 40 : 1; }
+  }
+  const spL = s.say && s.say.t < 200 ? layoutSay(s.say.text) : null;
+  const total = (fnL ? fnL.h + 8 : 0) + (spL ? spL.h + 8 : 0);
+  const flip = y - r - 24 - 7 - total < 2 && y + r + 26 + 7 + total < CH;
+  const tip0 = flip ? y + r + 26 : y - r - 24;
+  fo.flip = flip; let tip = tip0;
+  if (fnL){ drawBubble(x, tip, fnL, fo); tip = flip ? tip + 7 + fnL.h + 1 : tip - 7 - fnL.h - 1; }
+  if (spL) drawBubble(x, tip, spL, {border: s.color || '#333', flip, alpha: s.say.t > 160 ? 1 - (s.say.t - 160) / 40 : 1});
+}
+function pathStroke(pts, n){
+  ctx.beginPath();
+  for (let i = 0; i < n && i < pts.length; i++){ const p = pts[i]; i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y)); }
+  ctx.stroke();
+}
+function draw(t){
+  updateCamera();
+  ctx.save();
+  if (videoMode && battle){ ctx.translate(CW/2,CH/2); ctx.scale(camera.zoom,camera.zoom); ctx.translate(-camera.x,-camera.y); }
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, CW, CH);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(X(0) + .5, 0); ctx.lineTo(X(0) + .5, CH); ctx.moveTo(0, Y(0) + .5); ctx.lineTo(CW, Y(0) + .5); ctx.stroke();
+  ctx.drawImage(tc, 0, 0);
+  ctx.fillStyle = '#000'; ctx.font = '10px "DejaVu Sans",Verdana,sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('15', X(0), 10); ctx.fillText('-15', X(0), CH - 3); ctx.textAlign = 'left'; ctx.fillText('-25', 3, Y(0) - 3); ctx.textAlign = 'right'; ctx.fillText('25', CW - 3, Y(0) - 3);
+  if (preview && preview.length > 1 && state === 'aim'){
+    ctx.strokeStyle = 'rgba(30,110,230,.85)'; ctx.lineWidth = 2; ctx.setLineDash([6, 5]); pathStroke(preview, preview.length); ctx.setLineDash([]);
+  }
+  if (shot){
+    const sc = (shot.shooter && shot.shooter.color) || '#222';
+    ctx.strokeStyle = sc; ctx.lineWidth = 2; pathStroke(shot.path, shot.i);
+    const p = shot.path[Math.min(shot.i, shot.path.length) - 1];
+    if (p){ ctx.fillStyle = sc; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 3, 0, 7); ctx.fill(); }
+  }
+  if (teams) for (const T of teams) for (const s of T.soldiers) if (s.alive) drawSoldier(s, t);
+  if (teams) for (const T of teams) for (const s of T.soldiers) drawTalk(s, t);
+  for (const e of expl){
+    const cx = X(e.x), cy = Y(e.y), R = e.r * PXU * (0.7 + e.t * 0.9), a = 1 - e.t, g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    g.addColorStop(0, 'rgba(255,255,225,' + a + ')'); g.addColorStop(0.35, 'rgba(255,196,40,' + a + ')');
+    g.addColorStop(0.7, 'rgba(232,72,24,' + (0.85 * a) + ')'); g.addColorStop(1, 'rgba(200,30,10,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+function loop(t){ update(); draw(t); requestAnimationFrame(loop); }
+/* ---------- wake lock (keeps the screen on while playing) ---------- */
+let wakeLock = null;
+async function getWakeLock(){
+  try {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible' || (wakeLock && !wakeLock.released)) return;
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch(e){ /* unsupported, insecure context or denied: ignore */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') getWakeLock(); });
+['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, getWakeLock, {capture: true}));
+document.addEventListener('fullscreenchange', getWakeLock);
+getWakeLock();
+
+
+/* ---------- main menu wiring ---------- */
+(function(){
+  const menu = $('menu');
+  // The legacy top-bar duplicates of these settings now live in the menu.
+  $('mode').closest('label').style.display = 'none';
+  $('classicOpts').style.display = 'none';
+  // Reuse the existing bot-team roster widget inside the Bot vs Bot screen.
+  $('menuPanel').appendChild($('roster'));
+
+  const screens = ['mMain', 'mPvbSet', 'mBvbSet'];
+  const show = id => screens.forEach(s => $(s).classList.toggle('hide', s !== id));
+  const openMenu = () => { menu.classList.remove('hide'); show('mMain'); setFS(false); };
+  const closeMenu = () => menu.classList.add('hide');
+
+  const bind = (slider, out, suffix) => {
+    const sync = () => { $(out).textContent = $(slider).value + (suffix || ''); };
+    $(slider).oninput = sync; sync();
+  };
+  bind('sDiff', 'sDiffV'); bind('sSpeed1', 'sSpeed1V', '×'); bind('sSpeed2', 'sSpeed2V', '×');
+
+  const setSpeed = v => { speed = +v; $('speed').value = v; $('spd').textContent = v; };
+
+  $('mPvb').onclick = () => show('mPvbSet');
+  $('mBvb').onclick = () => show('mBvbSet');
+  document.querySelectorAll('#menu [data-back]').forEach(b => b.onclick = () => show('mMain'));
+
+  $('mStart1').onclick = () => {
+    videoMode = false; $('videoMode').checked = false;
+    $('mode').value = 'classic';
+    $('n0').value = $('sPlayers').value;
+    $('n1').value = $('sBots').value;
+    $('diff').value = $('sDiff').value; $('lvl').textContent = $('sDiff').value;
+    setSpeed($('sSpeed1').value);
+    closeMenu(); startGame();
+  };
+  $('mStart2').onclick = () => {
+    if (document.querySelectorAll('#roster .tg.on').length < 2){
+      alert('Pick at least two bot teams.'); return;
+    }
+    $('mode').value = 'battle';
+    videoMode = $('videoMode').checked;
+    setSpeed($('sSpeed2').value);
+    closeMenu(); startGame();
+  };
+
+  $('menuBtn').onclick = openMenu;
+  $('toMenu').onclick = () => { $('over').style.display = 'none'; gameId++; openMenu(); };
+  openMenu();
+})();
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
