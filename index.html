@@ -168,24 +168,10 @@ canvas{display:block;width:100%;height:auto}
           <input type="text" id="mpName" class="mp-input" placeholder="Enter your name" value="Player">
         </div>
         <div style="margin-top:14px">
-          <p class="mh">Match Settings</p>
-          <div class="mrow"><span class="lb">Players</span><select id="mpMaxPlayers"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></div>
-          <div class="mrow"><span class="lb">Soldiers per player</span><select id="mpSoldiers"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
-          <p class="mh" style="margin-top:14px">Multiplayer Mods</p>
-          <label class="video-toggle"><input type="checkbox" id="mpModSudden"><span><b>Sudden Death</b><small style="display:block;color:#a9c7a2;font-weight:normal">One soldier per player.</small></span></label>
-          <label class="video-toggle"><input type="checkbox" id="mpModBlind"><span><b>Blind Aim</b><small style="display:block;color:#a9c7a2;font-weight:normal">No trajectory preview; you must commit to the equation.</small></span></label>
-          <label class="video-toggle"><input type="checkbox" id="mpModRandom"><span><b>Random Turns</b><small style="display:block;color:#a9c7a2;font-weight:normal">The shared turn order is shuffled at the start.</small></span></label>
-          <label class="video-toggle"><input type="checkbox" id="mpModSpeed"><span><b>Speed Round</b><small style="display:block;color:#a9c7a2;font-weight:normal">Faster shot animations and turn flow.</small></span></label>
-          <div class="mhint">These mods only apply to online multiplayer and are chosen by the host.</div>
-          <div class="mhint">The room host chooses these settings. Every player gets their own team.</div>
-        </div>
-        <div style="margin-top:14px">
           <p class="mh">Layerbase Database (Optional)</p>
-          <input type="text" id="mpDbUrl" class="mp-input" placeholder="https://host/v1/databases/UUID/query" style="margin-bottom:6px">
           <input type="password" id="mpDbKey" class="mp-input" placeholder="Database HTTP API key">
           <div class="mhint">
             Layerbase &rarr; Connect &rarr; HTTP API key. Use the API key, not the database password.
-            The query URL keeps the server host and database UUID together.
             Leave blank to use this device's local room list only.
           </div>
           <button id="mpDbTest" style="width:100%;margin-top:6px">Test Connection</button>
@@ -231,7 +217,7 @@ canvas{display:block;width:100%;height:auto}
 
 <div id="app">
   <div class="bar">
-    <label>Mode <select id="mode"><option value="classic">You vs bots</option><option value="battle">Bot battle (watch)</option><option value="multiplayer">Online multiplayer</option></select></label>
+    <label>Mode <select id="mode"><option value="classic">You vs bots</option><option value="battle">Bot battle (watch)</option></select></label>
     <span id="classicOpts" style="display:contents"><label>You <select id="n0"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
     <label>Bots <select id="n1"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
     <label>AI level <input type="range" id="diff" min="1" max="10" value="2" style="width:110px"> <b id="lvl">2</b></label>
@@ -483,34 +469,17 @@ function nextTurn(){
     }
     state = 'aim'; updateUI(); botTurn(); return;
   }
-  botBusy = false; shot = null; preview = null;
-  const teamCount = teams.length;
-  if (mpState.mode === 'multiplayer' && mpState.mods.random && Array.isArray(mpState.turnOrder)){
-    const pos = mpState.turnOrder.indexOf(turnTeam);
-    for(let k=1;k<=teamCount;k++){ const t=mpState.turnOrder[(pos+k)%teamCount]; if(aliveOf(t).length){ turnTeam=t; break; } }
-  } else {
-    for (let k = 1; k <= teamCount; k++){
-      const t = (turnTeam + k) % teamCount;
-      if (aliveOf(t).length){ turnTeam = t; break; }
-    }
-  }
+  turnTeam ^= 1; botBusy = false; shot = null; preview = null;
   const T = teams[turnTeam], n = T.soldiers.length;
   for (let k = 1; k <= n; k++){
     const idx = (T.ptr + k) % n;
     if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; }
   }
   state = 'aim';
-  if (mpState.mode === 'multiplayer'){
-    inp.value=''; updateUI();
-    if (turnTeam === mpState.myTeamIndex && auto) botTurn();
-    else if(canInput()) refreshPreview();
-    drainRemoteShots();
-    return;
-  }
-  else if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
+  if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
   else { inp.value = ''; updateUI(); refreshPreview(); }
 }
-const canInput = () => state === 'aim' && turnTeam === (mpState.mode === 'multiplayer' ? mpState.myTeamIndex : 0) && !auto && !botBusy && !battle;
+const canInput = () => state === 'aim' && turnTeam === 0 && !auto && !botBusy && !battle;
 function updateUI(){
   if (battle){
     const roundLabel = seriesTotal > 1 ? 'Round ' + seriesRound + '/' + seriesTotal + ' — ' : '';
@@ -518,11 +487,8 @@ function updateUI(){
     renderBoard(); inp.readOnly = true; $('fire').disabled = true; $('solve').disabled = true; return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
-  let txt = state === 'over' ? 'Game over' : (mpState.mode === 'multiplayer' ?
-    (state === 'waitResult' ? 'Waiting for the host to confirm the result…' : (turnTeam === mpState.myTeamIndex ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Opponent's turn")) :
-    (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn"));
-  const mpScore = mpState.mode === 'multiplayer' ? teams.map((T,t) => 'T' + (t+1) + ': ' + aliveOf(t).length).join('  ') : '';
-  $('status').textContent = txt + '   |   ' + (mpState.mode === 'multiplayer' ? mpScore : 'You: ' + a0 + '  Bots: ' + a1);
+  let txt = state === 'over' ? 'Game over' : (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn");
+  $('status').textContent = txt + '   |   You: ' + a0 + '  Bots: ' + a1;
   inp.readOnly = !canInput(); $('fire').disabled = !canInput(); $('solve').disabled = !canInput();
 }
 
@@ -1024,15 +990,11 @@ function chatSystem(text){
   while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
   $('chat').scrollTop = $('chat').scrollHeight;
 }
-function fire(remoteExpr){
+function fire(){
   if (state !== 'aim') return;
-  const isRemote = typeof remoteExpr === 'string';
-  if (isRemote) inp.value = remoteExpr;
   let f; try { f = compile(inp.value); } catch(e){ setMsg(e.message, true); return; }
   const sh = current, r = simulate(f, sh, sh.dir);
   if (r.path.length < 2){ setMsg('That function goes nowhere — try another.', true); return; }
-  if (mpState.mode === 'multiplayer' && !isRemote) broadcastToPlayers({type:'shot', expr:inp.value, team:turnTeam, turn:mpTurnNo, sig:aliveSignature()});
-  if (mpState.mode === 'multiplayer') mpTurnNo++;
   if (battle){ chatLog(sh, inp.value); cameraShotCount++; }
   lastFired = {who: sh, text: inp.value};
   setMsg(''); state = 'anim'; preview = null; updateUI(); SFX.fire();
@@ -1070,22 +1032,6 @@ function afterShot(){
     nextTurn(); return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
-  if (mpState.mode === 'multiplayer'){
-    const aliveTeams = teams.map((T,t) => aliveOf(t).length > 0 ? t : -1).filter(t => t >= 0);
-    if (aliveTeams.length <= 1){
-      // The host is authoritative. All clients receive the same winning team.
-      if (mpState.isHost){
-        const winner = aliveTeams.length === 1 ? aliveTeams[0] : -1;
-        broadcastToPlayers({type:'result', winner});
-        showMultiplayerResult(winner);
-      } else {
-        state = 'waitResult'; updateUI();
-      }
-      return;
-    }
-    nextTurn();
-    return;
-  }
   if (!a0 || !a1){
     state = 'over'; updateUI(); SFX.win();
     $('overtxt').textContent = a0 && !a1 ? 'You win!' : (!a0 && a1 ? 'Bots win!' : 'Draw!');
@@ -1227,13 +1173,13 @@ function botTurn(){
   if (botBusy || state !== 'aim') return;
   botBusy = true; updateUI();
   const gid = gameId, sh = current;
-  setMsg(battle ? sh.name + ' is thinking…' : (mpState.mode === 'multiplayer' ? 'Auto-play is thinking…' : (sh.team === 1 ? 'Bot is thinking…' : 'Auto-play is thinking…')));
+  setMsg(battle ? sh.name + ' is thinking…' : (sh.team === 1 ? 'Bot is thinking…' : 'Auto-play is thinking…'));
   talk(sh, 'think', 0.35);
   setTimeout(() => {
     if (gid !== gameId || current !== sh) return;
     let sol;
     if (battle){ sol = battleSolve(sh); sh.dir = sol.dir; }
-    else sol = (sh.team === 0 || (mpState.mode === 'multiplayer' && sh.team === mpState.myTeamIndex)) ? cheatSolve(sh, sh.dir) : botAim(sh, sh.dir, $('diff').value);
+    else sol = sh.team === 0 ? cheatSolve(sh, sh.dir) : botAim(sh, sh.dir, $('diff').value);
     typeInto(sol.expr, () => setTimeout(() => { if (gid === gameId){ setMsg(battle ? sh.name : ''); fire(); } }, 250 / speed));
   }, 600 / speed);
 }
@@ -1396,7 +1342,7 @@ function applyMode(){
   $('classicOpts').classList.toggle('hide', battle); $('ctrl').classList.toggle('hide', battle);
   ['roster', 'board', 'feed', 'chat'].forEach(id => $(id).classList.toggle('hide', !battle));
 }
-function startGame(){ battle = $('mode').value === 'battle'; if ($('mode').value !== 'multiplayer') mpState.mode='singleplayer'; if (!battle) videoMode = false; applyMode(); battle ? startBattle() : startClassic(); }
+function startGame(){ battle = $('mode').value === 'battle'; if (!battle) videoMode = false; applyMode(); battle ? startBattle() : startClassic(); }
 $('mode').onchange = startGame;
 
 /* ---------- fullscreen (bot battle) ---------- */
@@ -1423,17 +1369,16 @@ $('speed').oninput = e => { speed = +e.target.value; $('spd').textContent = spee
 /* ---------- preview & input ---------- */
 function refreshPreview(){
   preview = null;
-  if (state !== 'aim' || turnTeam !== (mpState.mode === 'multiplayer' ? mpState.myTeamIndex : 0)) return;
-  if (mpState.mode === 'multiplayer' && mpState.mods.blind){ preview = null; setMsg('Blind Aim: trajectory preview disabled.'); return; }
+  if (state !== 'aim' || turnTeam !== 0) return;
   if (!battle && !auto && current) current.typing = inp.value || null;
   const s = inp.value.trim();
   if (!s){ setMsg('Type a function of x, e.g. 0.5*x or 3*sin(x)'); return; }
-  try { preview = simulate(compile(s), current, current.dir).path; setMsg(''); }
+  try { preview = simulate(compile(s), current, 1).path; setMsg(''); }
   catch(e){ setMsg(e.message, true); }
 }
 inp.addEventListener('input', refreshPreview);
 inp.addEventListener('keydown', e => { if (e.key === 'Enter') fire(); });
-$('fire').onclick = () => fire();
+$('fire').onclick = fire;
 const KEYS = ['7','8','9','+','-','*','/','^','4','5','6','(',')','x','pi','e','1','2','3','abs(','sin(','cos(','tan(','ln(','0','.','sqrt(','exp(','⌫','C','←','→'];
 KEYS.forEach(k => {
   const b = document.createElement('button'); b.textContent = k; b.onclick = () => press(k); $('keys').appendChild(b);
@@ -1457,16 +1402,10 @@ $('solve').onclick = () => {
     inp.value = cheatSolve(current, 1).expr; refreshPreview();
   }, 30);
 };
-$('auto').onchange = e => {
-  auto = e.target.checked; updateUI();
-  if (auto){
-    if (state === 'aim' && (mpState.mode === 'multiplayer' ? turnTeam === mpState.myTeamIndex : turnTeam === 0)) botTurn();
-    else if (state === 'over' && mpState.mode !== 'multiplayer') startGame();
-  }
-};
+$('auto').onchange = e => { auto = e.target.checked; updateUI(); if (auto){ if (state === 'aim' && turnTeam === 0) botTurn(); else if (state === 'over') startGame(); } };
 $('cheat').oninput = e => { $('clvl').textContent = e.target.value; };
 $('diff').oninput = e => { $('lvl').textContent = e.target.value; };
-$('newg').onclick = startGame; $('again').onclick = () => mpState.mode === 'multiplayer' ? playAgainMultiplayer() : startGame();
+$('newg').onclick = startGame; $('again').onclick = startGame;
 
 /* ---------- sound (synthesised WebAudio) ---------- */
 const SFX = (() => {
@@ -1750,91 +1689,23 @@ document.addEventListener('fullscreenchange', getWakeLock);
 getWakeLock();
 
 
-/* ---------- deterministic shared randomness ----------
-   Both players must build the exact same battlefield. Instead of shipping the
-   terrain bitmap over the data channel (large, slow, and easy to lose), the
-   host picks one 32-bit seed and both sides generate the map and the soldier
-   placement from it. Math.random is swapped for a seeded generator only for
-   the duration of the map build, so the rest of the game is unaffected.
-*/
-const realRandom = Math.random.bind(Math);
-function mulberry32(a){
-  return function(){
-    a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function withSeed(seed, fn){
-  Math.random = mulberry32(seed >>> 0);
-  try { return fn(); } finally { Math.random = realRandom; }
-}
-
 /* ---------- multiplayer system ---------- */
-let mpTurnNo = 0;          // how many shots have been resolved this game
-let mpPendingShots = [];   // remote shots that arrived before we were ready for them
-
 let mpState = {
   mode: 'singleplayer',
   peerId: null,
   peer: null,
   connections: {},
   dbApiKey: null,
-  dbUrl: null,
   useDb: false,
   playerName: 'Player',
   roomCode: null,
   roomPlayers: {},
-  playerTeams: {},
-  maxPlayers: 2,
-  soldiersPerPlayer: 2,
   myTeamIndex: -1,
   ready: false,
   remoteReady: false,
-  isHost: false,
-  starting: false,
   rooms: [],
-  roomListTimer: null,
-  mods: {sudden:false, blind:false, random:false, speed:false},
-  turnOrder: null
+  roomListTimer: null
 };
-
-async function deleteRoomRecord(){
-  const code = mpState.roomCode;
-  if(!code) return;
-  try {
-    if(mpState.useDb){
-      await ensureRoomsTable();
-      await dbQuery('DELETE FROM ' + LB_TABLE + ' WHERE code = ' + sqlStr(code));
-    }
-  } catch(e){ console.warn('Could not delete room from Layerbase:', e); }
-  try {
-    const rooms = JSON.parse(localStorage.getItem('graphwar_rooms') || '[]').filter(r => r.code !== code);
-    localStorage.setItem('graphwar_rooms', JSON.stringify(rooms));
-  } catch(e){}
-}
-
-async function leaveMultiplayerRoom(notify=true){
-  if(!mpState.roomCode && !Object.keys(mpState.connections).length) return;
-  if(notify) broadcastToPlayers({type:'leave'});
-  await deleteRoomRecord();
-  Object.values(mpState.connections).forEach(conn => { try { conn.close(); } catch(e){} });
-  mpState.connections = {};
-  mpState.mode = 'singleplayer';
-  mpState.roomCode = null; mpState.myTeamIndex = -1; mpState.playerTeams = {};
-  mpState.ready = false; mpState.remoteReady = false; mpState.isHost = false; mpState.starting = false;
-  mpState.remoteReady = false;
-}
-
-function playAgainMultiplayer(){
-  if(mpState.mode !== 'multiplayer') return startGame();
-  $('over').style.display = 'none';
-  state = 'over';
-  mpTurnNo = 0; mpPendingShots = [];
-  if(mpState.isHost) startMultiplayerHost();
-  else broadcastToPlayers({type:'rematch_request'});
-}
 
 function initMultiplayer(){
   try {
@@ -1863,246 +1734,56 @@ function setMpStatus(text, isErr){
 function handleIncomingConnection(conn){
   mpState.connections[conn.peer] = conn;
   conn.on('data', data => handleMultiplayerMessage(data, conn.peer));
-  conn.on('open', () => {
-    updateLobbyDisplay();
-    conn.send({type:'hello', name:mpState.playerName, ready:mpState.ready});
-    maybeStartMultiplayer();
-  });
-  conn.on('close', () => { delete mpState.connections[conn.peer]; if(mpState.isHost){ delete mpState.playerTeams[conn.peer]; delete mpState.roomPlayers[conn.peer]; sendRoster(); } updateLobbyDisplay(); });
+  conn.on('open', () => updateLobbyDisplay());
+  conn.on('close', () => { delete mpState.connections[conn.peer]; updateLobbyDisplay(); });
 }
 
 function connectToPeer(peerId){
   const conn = mpState.peer.connect(peerId);
   mpState.connections[peerId] = conn;
   conn.on('data', data => handleMultiplayerMessage(data, peerId));
-  conn.on('open', () => {
-    updateLobbyDisplay();
-    conn.send({type:'hello', name:mpState.playerName, ready:mpState.ready});
-  });
+  conn.on('open', () => updateLobbyDisplay());
   conn.on('close', () => { delete mpState.connections[peerId]; updateLobbyDisplay(); });
   return conn;
 }
 
 function broadcastToPlayers(msg){
   Object.values(mpState.connections).forEach(conn => {
-    if(!conn.open) return;
     try { conn.send(msg); } catch(e){ console.error('Send failed:', e); }
   });
 }
 
-function sendRoster(){
-  if(!mpState.isHost) return;
-  const players = {};
-  players[mpState.peerId] = 0;
-  Object.keys(mpState.playerTeams).forEach(id => players[id] = mpState.playerTeams[id]);
-  const roster = [{peerId:mpState.peerId, name:mpState.playerName, team:0, ready:mpState.ready}];
-  Object.keys(mpState.playerTeams).forEach(id => { const p=mpState.roomPlayers[id]||{}; roster.push({peerId:id,name:p.name||'Player',team:+mpState.playerTeams[id],ready:!!p.ready}); });
-  broadcastToPlayers({type:'welcome', players, roster, maxPlayers:mpState.maxPlayers, soldiers:mpState.soldiersPerPlayer, mods:mpState.mods});
-  updateLobbyDisplay();
-}
-
 function handleMultiplayerMessage(data, fromPeerId){
-  if(!data || typeof data.type !== 'string') return;
-  if(data.type === 'hello'){
-    if(mpState.isHost){
-      const ids = Object.keys(mpState.playerTeams);
-      if(mpState.playerTeams[fromPeerId] == null){
-        if(ids.length + 1 >= mpState.maxPlayers){
-          try { Object.values(mpState.connections).find(c => c.peer === fromPeerId)?.send({type:'room_full'}); } catch(e){}
-          return;
-        }
-        const used = [0, ...ids.map(id => +mpState.playerTeams[id])];
-        let team = 0; while(used.includes(team)) team++;
-        mpState.playerTeams[fromPeerId] = team;
-        mpState.roomPlayers[fromPeerId] = {name:data.name || 'Player', ready:!!data.ready, team};
-      } else mpState.roomPlayers[fromPeerId].ready = !!data.ready;
-      sendRoster();
-    } else {
-      mpState.remoteReady = !!data.ready;
-    }
+  if(data.type === 'ready'){
+    mpState.remoteReady = true;
     updateLobbyDisplay();
-    maybeStartMultiplayer();
-  } else if(data.type === 'ready'){
-    if(mpState.isHost && mpState.roomPlayers[fromPeerId]) mpState.roomPlayers[fromPeerId].ready = !!data.ready;
-    else mpState.remoteReady = !!data.ready;
-    updateLobbyDisplay();
-    maybeStartMultiplayer();
-  } else if(data.type === 'welcome' && !mpState.isHost){
-    mpState.maxPlayers = Math.max(2, Math.min(4, +(data.maxPlayers || 2)));
-    mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +(data.soldiers || 2)));
-    if(data.mods) mpState.mods = {...mpState.mods, ...data.mods};
-    mpState.playerTeams = data.players || {};
-    if(mpState.peerId && mpState.playerTeams[mpState.peerId] != null) mpState.myTeamIndex = +mpState.playerTeams[mpState.peerId];
-    mpState.roomPlayers = {}; (data.roster || []).forEach(p => mpState.roomPlayers[p.peerId] = p);
-    updateLobbyDisplay();
-  } else if(data.type === 'room_full'){
-    setMpStatus('Room is full.', true);
-    leaveMultiplayerRoom(false);
-    show('mMultiplayerSet');
-  } else if(data.type === 'start' && !mpState.isHost){
-    applyMultiplayerStart(data);
-  } else if(data.type === 'shot'){
-    queueRemoteShot(data);
-  } else if(data.type === 'result'){
-    if(mpState.mode === 'multiplayer' && state !== 'over') showMultiplayerResult(Number.isInteger(data.winner) ? data.winner : -1);
-  } else if(data.type === 'rematch_request'){
-    if(mpState.isHost && mpState.mode === 'multiplayer') startMultiplayerHost();
-  } else if(data.type === 'leave'){
-    deleteRoomRecord().catch(()=>{});
-    setMsg('Opponent left the room.', true);
-    leaveMultiplayerRoom(false);
+  } else if(data.type === 'shot' && mpState.mode === 'multiplayer'){
+    console.log('Remote shot:', data);
   }
-}
-
-function showMultiplayerResult(winner){
-  state = 'over';
-  updateUI();
-  const mine = winner === mpState.myTeamIndex;
-  const draw = winner < 0;
-  if (draw){
-    $('overtxt').textContent = 'Draw!';
-  } else {
-    $('overtxt').textContent = mine ? 'YOU WIN!' : 'YOU LOSE!';
-  }
-  $('over').style.display = 'flex';
-  if (draw) SFX.win(); else if (mine) SFX.win(); else SFX.death();
-}
-
-function startMultiplayerGame(seed, n0, n1, myTeam, sharedTurnOrder){
-  gameId++; botBusy = false; shot = null; expl = []; preview = null;
-  battle = false; videoMode = false;
-  auto = !!$('auto').checked;
-  mpState.mode = 'multiplayer'; mpState.myTeamIndex = myTeam; mpState.seed = seed;
-  mpTurnNo = 0; mpPendingShots = [];
-  mpState.turnOrder = Array.isArray(sharedTurnOrder) ? sharedTurnOrder.slice() : null;
-  // Both clients use the same animation speed so turn timing stays deterministic.
-  speed = Math.max(1, Math.min(3, +(mpState.matchSpeed || 1))); $('speed').value = speed; $('spd').textContent = speed;
-  $('mode').value = 'multiplayer';
-  $('n0').value = String(n1); $('n1').value = String(n1);
-  $('menu').classList.add('hide'); $('over').style.display = 'none';
-  withSeed(seed, () => {
-    // Multiplayer uses one team per connected player instead of the classic 2-team layout.
-    gameId++; botBusy = false; shot = null; expl = []; preview = null;
-    const count = Math.max(2, Math.min(4, +n0 || 2));
-    const soldiers = mpState.mods.sudden ? 1 : Math.max(1, Math.min(5, +n1 || 2));
-    teams = Array.from({length:count}, (_, i) => ({dir: i % 2 === 0 ? 1 : -1, soldiers:[], ptr:-1}));
-    tctx.clearRect(0, 0, CW, CH); tctx.fillStyle = '#000';
-    const no = 9 + Math.floor(Math.random()*5);
-    for (let i = 0; i < no; i++){
-      const big = Math.random() < 0.2, r = (big ? 3.5 : 0.9) + Math.random() * (big ? 3 : 2.2);
-      tctx.beginPath(); tctx.arc(X(-25 + Math.random()*50), Y(-15 + Math.random()*30), r*PXU, 0, 7); tctx.fill();
-    }
-    refreshTerrain();
-    const slot = 46 / count;
-    for(let t=0;t<count;t++) for(let k=0;k<soldiers;k++) placeSoldier(t, -23 + slot*t, -23 + slot*(t+1), k, soldiers);
-    refreshTerrain();
-    if(!Array.isArray(mpState.turnOrder) || mpState.turnOrder.length !== count){ mpState.turnOrder = Array.from({length:count}, (_,i)=>i); }
-    turnTeam = mpState.turnOrder[mpState.turnOrder.length-1]; inp.value=''; nextTurn();
-  });
-}
-
-function startMultiplayerHost(){
-  // Initial start happens from the lobby; rematches happen from the result screen.
-  if(!mpState.isHost || mpState.starting) return;
-  if(mpState.mode !== 'lobby' && !(mpState.mode === 'multiplayer' && (state === 'over' || state === 'waitResult'))) return;
-  mpState.starting = true;
-  const seed = (realRandom() * 0xFFFFFFFF) >>> 0;
-  const count = Math.max(2, Math.min(4, +mpState.maxPlayers || 2));
-  const soldiers = Math.max(1, Math.min(5, +mpState.soldiersPerPlayer || 2));
-  const matchSpeed = mpState.mods.speed ? 2 : Math.max(1, Math.min(3, +mpState.matchSpeed || 1));
-  mpState.maxPlayers = count; mpState.soldiersPerPlayer = soldiers; mpState.matchSpeed = matchSpeed;
-  const playerCount = Math.min(count, Object.keys(mpState.playerTeams).length + 1);
-  const order = Array.from({length:playerCount}, (_,i)=>i);
-  if(mpState.mods.random){ for(let i=order.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [order[i],order[j]]=[order[j],order[i]]; } }
-  mpState.turnOrder = order;
-  broadcastToPlayers({type:'start', seed: seed, playerCount: playerCount, soldiers: soldiers, speed: matchSpeed, players: mpState.playerTeams, mods: mpState.mods, turnOrder: order});
-  startMultiplayerGame(seed, playerCount, soldiers, mpState.myTeamIndex < 0 ? 0 : mpState.myTeamIndex, order);
-  mpState.starting = false;
-}
-
-function applyMultiplayerStart(data){
-  if(typeof data.seed !== 'number'){ setMpStatus('Could not start: no shared map seed received.', true); return; }
-  if(data.players && mpState.peerId && data.players[mpState.peerId] != null) mpState.myTeamIndex = +data.players[mpState.peerId];
-  mpState.maxPlayers = Math.max(2, Math.min(4, +(data.playerCount || 2)));
-  mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +(data.soldiers || 2)));
-  mpState.matchSpeed = Math.max(1, Math.min(3, +(data.speed || 1)));
-  if(data.mods) mpState.mods = {...mpState.mods, ...data.mods};
-  mpState.turnOrder = Array.isArray(data.turnOrder) ? data.turnOrder.slice() : null;
-  startMultiplayerGame(data.seed, mpState.maxPlayers, mpState.soldiersPerPlayer, mpState.myTeamIndex < 0 ? 1 : mpState.myTeamIndex, mpState.turnOrder);
-}
-
-// A shot only makes sense on the turn it was fired on, and only once the local
-// side has finished the previous animation. Anything early is parked here and
-// replayed in order; anything already applied is dropped.
-function aliveSignature(){
-  return teams ? teams.map(T => T.soldiers.map(x => x.alive ? 1 : 0).join('')).join('|') : '';
-}
-function queueRemoteShot(msg){
-  if(mpState.mode !== 'multiplayer') return;
-  mpPendingShots.push(msg);
-  drainRemoteShots();
-}
-function drainRemoteShots(){
-  if(mpState.mode !== 'multiplayer') return;
-  mpPendingShots = mpPendingShots.filter(m => typeof m.turn !== 'number' || m.turn >= mpTurnNo);
-  if(state !== 'aim' || botBusy) return;
-  const i = mpPendingShots.findIndex(m => typeof m.turn !== 'number' || m.turn === mpTurnNo);
-  if(i < 0) return;
-  const m = mpPendingShots.splice(i, 1)[0];
-  if(turnTeam === mpState.myTeamIndex || m.team !== turnTeam || typeof m.expr !== 'string') return;
-  if(m.sig && m.sig !== aliveSignature()) setMsg('Games drifted apart — results may differ.', true);
-  fire(m.expr);
-}
-
-function maybeStartMultiplayer(){
-  if(!mpState.isHost || mpState.starting || mpState.mode === 'multiplayer') return;
-  const connected = Object.values(mpState.connections).filter(c => c.open).length;
-  const players = connected + 1;
-  const everyoneReady = mpState.ready && Object.keys(mpState.roomPlayers).every(id => mpState.roomPlayers[id].ready);
-  if(players >= 2 && everyoneReady) startMultiplayerHost();
 }
 
 /* ---------- Layerbase HTTP query API ----------
-   The Layerbase query endpoint sends no Access-Control-Allow-Origin header, so a
-   direct browser fetch is blocked by CORS and shows up as "Failed to fetch".
-   We therefore POST through this app's own same-origin proxy, which forwards
-   {url, key, query} to Layerbase server-side. Direct fetch is kept as a fallback
-   for the case where the file is opened standalone (no proxy available).
+   POST {"query": "<SQL>"} with the HTTP API key as a Bearer token (not the DB password).
+   Server URL and database UUID stay together in LB_URL.
 */
-const LB_PROXY = '/api/public/layerbase';
-const LB_DEFAULT_URL = 'https://ovh.cloud.layerbase.dev/v1/databases/5b94ed0b-a5a7-49da-a9be-61ab1bd233fe/query';
+const LB_URL = 'https://ovh.cloud.layerbase.dev/v1/databases/5b94ed0b-a5a7-49da-a9be-61ab1bd233fe/query';
 const LB_DEFAULT_KEY = '';   // optional: paste a key here to prefill it (visible to anyone who opens this file)
 const LB_TABLE = 'graphwar_rooms';
 
-function dbConfigured(){ return !!(mpState.dbApiKey && mpState.dbUrl); }
+function dbConfigured(){ return !!mpState.dbApiKey; }
 
 async function dbQuery(sql){
-  const url = mpState.dbUrl || LB_DEFAULT_URL;
-  let res, viaProxy = true;
-  try {
-    res = await fetch(LB_PROXY, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: url, key: mpState.dbApiKey, query: sql})
-    });
-    if(res.status === 404 || res.status === 501) throw new Error('no proxy');
-  } catch(e){
-    viaProxy = false;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {'Authorization': 'Bearer ' + mpState.dbApiKey, 'Content-Type': 'application/json'},
-        body: JSON.stringify({query: sql})
-      });
-    } catch(e2){
-      throw new Error('Could not reach the database (the Layerbase endpoint blocks direct browser requests). Open the game through the app so it can proxy the request.');
-    }
-  }
+  const res = await fetch(LB_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + mpState.dbApiKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({query: sql})
+  });
   if(!res.ok){
     const text = await res.text().catch(()=> '');
-    let detail = text.slice(0,200);
-    try { const j = JSON.parse(text); detail = j.error || j.message || detail; } catch(e){}
-    throw new Error('Query failed (' + res.status + (viaProxy ? '' : ', direct') + '): ' + detail);
+    throw new Error('Query failed (' + res.status + '): ' + text.slice(0,200));
   }
   return res.json();
 }
@@ -2131,10 +1812,9 @@ async function ensureRoomsTable(){
 }
 
 async function testDbConnection(){
-  syncDbFieldsFromForm();
-  dbTableReady = false;
+  mpState.dbApiKey = ($('mpDbKey').value || '').trim();
   if(!dbConfigured()){
-    setMpStatus('ℹ No database URL/key set — using local room list only', false);
+    setMpStatus('ℹ No database key set — using local room list only', false);
     mpState.useDb = false;
     return;
   }
@@ -2240,27 +1920,23 @@ async function findRoomByCode(code){
 
 function updateLobbyDisplay(){
   const playersDiv = $('mpPlayers');
-  const liveConnections = Object.values(mpState.connections).filter(conn => conn.open);
-  const rows = [{name:mpState.playerName, team:0, ready:mpState.ready, you:true}];
-  if(mpState.isHost){
-    Object.keys(mpState.playerTeams).forEach(id => { const p=mpState.roomPlayers[id]||{}; rows.push({name:p.name||'Player',team:+mpState.playerTeams[id],ready:!!p.ready,you:false}); });
+  playersDiv.innerHTML = '<b>Players:</b><br>';
+  playersDiv.innerHTML += '<div class="mp-player">🔵 ' + mpState.playerName + ' (You)</div>';
+  if(Object.keys(mpState.connections).length > 0){
+    playersDiv.innerHTML += '<div class="mp-player">🟢 Opponent connected</div>';
   } else {
-    Object.values(mpState.roomPlayers).filter(p => p.peerId !== mpState.peerId).forEach(p => rows.push(p));
-    if(!rows.some(r=>r.team===0 && !r.you)) rows.push({name:'Host',team:0,ready:mpState.remoteReady,you:false});
+    playersDiv.innerHTML += '<div class="mp-player" style="opacity:0.5">⚫ Waiting for opponent...</div>';
   }
-  rows.sort((a,b)=>(a.team||0)-(b.team||0));
-  playersDiv.innerHTML = '<b>Players (' + rows.length + '/' + (mpState.maxPlayers||2) + '):</b><br>' + rows.map(p =>
-    '<div class="mp-player">' + (p.you ? '🔵 ' : '🟢 ') + (p.name || 'Player') + ' · Team ' + ((+p.team||0)+1) + (p.you?' (You)':'') + (p.ready?' ✓':'') + '</div>'
-  ).join('');
-  if(rows.length < (mpState.maxPlayers||2)) playersDiv.innerHTML += '<div class="mp-player" style="opacity:.5">⚫ Waiting for more players...</div>';
   const readyBtn = $('mMpReady');
-  readyBtn.disabled = liveConnections.length === 0;
-  if(mpState.ready){
+  if(mpState.ready && mpState.remoteReady){
+    $('mpLobbyStatus').textContent = '✓ Both ready! Game starting...';
     readyBtn.textContent = 'Ready ✓';
-    $('mpLobbyStatus').textContent = rows.length >= 2 ? 'Waiting for all players to ready...' : 'Waiting for players...';
+  } else if(mpState.ready){
+    readyBtn.textContent = 'Ready ✓';
+    $('mpLobbyStatus').textContent = 'Waiting for opponent to ready...';
   } else {
     readyBtn.textContent = 'Ready Up';
-    $('mpLobbyStatus').textContent = rows.length >= 2 ? "Click Ready when you're ready to play" : 'Waiting for more players...';
+    $('mpLobbyStatus').textContent = 'Click Ready when you\'re ready to play';
   }
 }
 
@@ -2321,22 +1997,14 @@ async function displayRoomList(){
   $('mBvb').onclick = () => show('mBvbSet');
   $('mMultiplayer').onclick = () => show('mMultiplayerSet');
 
-  // Remember the last used endpoint + key on this device.
-  $('mpDbUrl').value = localStorage.getItem('graphwar_db_url') || LB_DEFAULT_URL;
-  $('mpDbKey').value = localStorage.getItem('graphwar_db_key') || LB_DEFAULT_KEY;
+  if(LB_DEFAULT_KEY){ $('mpDbKey').value = LB_DEFAULT_KEY; }
 
-  window.syncDbFieldsFromForm = function(){
+  function syncDbFieldsFromForm(){
     mpState.playerName = $('mpName').value || 'Player';
     mpState.dbApiKey = ($('mpDbKey').value || '').trim();
-    mpState.dbUrl = ($('mpDbUrl').value || '').trim() || LB_DEFAULT_URL;
-    try {
-      localStorage.setItem('graphwar_db_url', mpState.dbUrl);
-      localStorage.setItem('graphwar_db_key', mpState.dbApiKey);
-    } catch(e){}
-  };
-  const syncDbFieldsFromForm = window.syncDbFieldsFromForm;
+  }
 
-  $('mpDbTest').onclick = () => testDbConnection();
+  $('mpDbTest').onclick = () => { syncDbFieldsFromForm(); testDbConnection(); };
 
   $('mMpListRooms').onclick = async () => {
     syncDbFieldsFromForm();
@@ -2346,22 +2014,13 @@ async function displayRoomList(){
     }
     displayRoomList();
   };
-  ['mpModSudden','mpModBlind','mpModRandom','mpModSpeed'].forEach(id => { const el=$(id); if(el) el.onchange=()=>{ mpState.mods={sudden:$('mpModSudden').checked, blind:$('mpModBlind').checked, random:$('mpModRandom').checked, speed:$('mpModSpeed').checked}; }; });
-
-$('mMpCreateRoom').onclick = async () => {
-  mpState.mods={sudden:$('mpModSudden').checked, blind:$('mpModBlind').checked, random:$('mpModRandom').checked, speed:$('mpModSpeed').checked};
+  $('mMpCreateRoom').onclick = async () => {
     syncDbFieldsFromForm();
     if(dbConfigured() && !mpState.useDb){
       await testDbConnection();
     }
     mpState.roomCode = Math.random().toString(36).slice(2,8).toUpperCase();
-    mpState.isHost = true; mpState.mode = 'lobby'; mpState.myTeamIndex = 0;
-    mpState.maxPlayers = Math.max(2, Math.min(4, +$('mpMaxPlayers').value || 2));
-    mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +$('mpSoldiers').value || 2));
-    mpState.matchSpeed = 1;
-    mpState.playerTeams = {}; mpState.roomPlayers = {};
     mpState.ready = false; mpState.remoteReady = false;
-    $('mpRoomCode').textContent = mpState.roomCode;
     await createRoom();
     updateLobbyDisplay();
     show('mMultiplayerLobby');
@@ -2382,9 +2041,7 @@ $('mMpCreateRoom').onclick = async () => {
       return;
     }
     mpState.roomCode = code;
-    mpState.isHost = false; mpState.mode = 'lobby'; mpState.myTeamIndex = -1;
     mpState.ready = false; mpState.remoteReady = false;
-    $('mpRoomCode').textContent = mpState.roomCode;
     connectToPeer(room.peerId);
     updateLobbyDisplay();
     show('mMultiplayerLobby');
@@ -2392,14 +2049,15 @@ $('mMpCreateRoom').onclick = async () => {
   $('mMpReady').onclick = () => {
     mpState.ready = !mpState.ready;
     updateLobbyDisplay();
-    broadcastToPlayers({type:'ready', ready:mpState.ready, name:mpState.playerName});
-    maybeStartMultiplayer();
+    broadcastToPlayers({type: 'ready'});
+    if(mpState.ready && mpState.remoteReady){
+      closeMenu();
+      $('mode').value = 'multiplayer';
+      setTimeout(() => { startGame(); }, 100);
+    }
   };
   
-  document.querySelectorAll('#menu [data-back]').forEach(b => b.onclick = async () => {
-    if (b.closest('#mMultiplayerLobby') && (mpState.roomCode || mpState.mode === 'lobby')) await leaveMultiplayerRoom();
-    show('mMain');
-  });
+  document.querySelectorAll('#menu [data-back]').forEach(b => b.onclick = () => show('mMain'));
 
 
   $('mStart1').onclick = () => {
@@ -2425,17 +2083,8 @@ $('mMpCreateRoom').onclick = async () => {
   };
 
   $('menuBtn').onclick = openMenu;
-  $('toMenu').onclick = async () => { $('over').style.display = 'none'; gameId++; if(mpState.mode === 'multiplayer' || mpState.roomCode) await leaveMultiplayerRoom(); openMenu(); };
+  $('toMenu').onclick = () => { $('over').style.display = 'none'; gameId++; mpState.mode = 'singleplayer'; mpState.ready = false; mpState.remoteReady = false; openMenu(); };
   
-  addEventListener('beforeunload', () => {
-    if (mpState.roomCode) {
-      try { broadcastToPlayers({type:'leave'}); } catch(e){}
-      try {
-        const rooms = JSON.parse(localStorage.getItem('graphwar_rooms') || '[]').filter(r => r.code !== mpState.roomCode);
-        localStorage.setItem('graphwar_rooms', JSON.stringify(rooms));
-      } catch(e){}
-    }
-  });
   initMultiplayer();
   openMenu();
 })();
