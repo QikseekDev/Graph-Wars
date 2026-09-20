@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Graphwar</title>
 <script type="module">
-// Loads Mediabunny (https://mediabunny.dev), a WebCodecs-based MP4 muxer, from
-// a CDN. Video export works fine without this (see startVideoRecordingLegacy
-// in the main script) - this just upgrades it to a much more robust encoder
-// that doesn't rely on the browser's built-in MediaRecorder, which is what
-// was causing audio/video drift in exported clips. Loaded as a module purely
-// so we can `import` it directly; nothing else on the page depends on modules.
-import * as MB from 'https://cdn.jsdelivr.net/npm/mediabunny/+esm';
-window.MB = MB;
+// Loads Mediabunny (https://mediabunny.dev), the WebCodecs MP4 muxer used for video export.
+// Tries several CDNs; the game waits on window.MBReady before starting a recording.
+window.MBReady = (async () => {
+  for (const url of ['https://cdn.jsdelivr.net/npm/mediabunny/+esm', 'https://esm.sh/mediabunny', 'https://unpkg.com/mediabunny?module']){
+    try { window.MB = await import(url); return window.MB; } catch(e){ console.warn('Mediabunny failed from', url, e); }
+  }
+  return null;
+})();
 </script>
 <style>
 :root{--bg:#a9d6a0;--panel:#e4f2df;--panel2:#5f8a59;--ink:#1a2a18;--muted:#33502f;--accent:#e08a00;--red:#c62828;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -99,6 +99,7 @@ canvas{display:block;width:100%;height:auto}
 #recBadge:before{content:'';display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background:#ef3e37;animation:recPulse 1.2s ease-in-out infinite}
 #exportVideo{display:none;max-width:260px;text-align:center;text-decoration:none}
 #exportVideo.show{display:block}
+#exportVideo.busy{pointer-events:none;opacity:.75}
 @keyframes recPulse{50%{opacity:.35}}
 
 </style>
@@ -137,6 +138,9 @@ canvas{display:block;width:100%;height:auto}
         <label class="video-toggle"><input type="checkbox" id="highlightCards" checked><span><b>Highlight reel cards</b><small style="display:block;color:#a9c7a2;font-weight:normal">Add a battle title and winner card to the export</small></span></label>
         <label class="video-toggle"><input type="checkbox" id="directorMode" checked><span><b>Director mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Mix battlefield wide shots with action close-ups</small></span></label>
         <div class="mrow" id="orientationRow"><span class="lb">Video format</span><select id="videoOrientation"><option value="landscape">Landscape · 16:9</option><option value="portrait">Portrait · 9:16</option></select></div>
+        <div class="mrow"><span class="lb">Resolution</span><select id="videoRes"><option value="480">480p</option><option value="720" selected>720p HD</option><option value="1080">1080p Full HD</option><option value="1440">1440p 2K</option></select></div>
+        <div class="mrow"><span class="lb">Frame rate</span><select id="videoFps"><option value="24">24 fps</option><option value="30" selected>30 fps</option><option value="60">60 fps</option></select></div>
+        <div class="mhint">Higher settings look sharper but export slower, and can lag on phones.</div>
         <p class="mh" style="margin-top:16px">Bot teams &amp; soldiers per team</p>
         <div id="menuPanel"></div>
         <div class="mhint">Pick at least two teams. Each pick is its own team.</div>
@@ -192,8 +196,54 @@ canvas{display:block;width:100%;height:auto}
 
 <script>
 const $ = id => document.getElementById(id);
+/* ---------- virtual clock ----------
+   While a video is being exported the whole game runs on this clock instead of
+   real time: one fixed 1/60 s step per tick, timers (setTimeout) fire from the
+   clock, and sound effects are logged with clock timestamps. Every video frame
+   and every sound is therefore placed on the same timeline no matter how slow
+   the device is - a phone that can only manage 10 fps at 2K just exports slower,
+   but the audio can never drift away from the picture. */
+const VT = (() => {
+  const realNow = performance.now.bind(performance), realSet = window.setTimeout.bind(window), realClear = window.clearTimeout.bind(window);
+  let on = false, now = 0, seq = 0, timers = [], inGame = false;
+  // Only *game* code sees the virtual clock (inGame). Library code such as the video
+  // encoder keeps using real timers, so it can never be starved by the paused clock.
+  window.setTimeout = function(fn, ms, ...args){
+    if (!(on && inGame)) return realSet(fn, ms, ...args);
+    const id = 1e9 + (++seq); timers.push({id, fn, args, due: now + Math.max(0, +ms || 0), seq}); return id;
+  };
+  window.clearTimeout = function(id){
+    if (id >= 1e9){ const i = timers.findIndex(t => t.id === id); if (i >= 0) timers.splice(i, 1); } else realClear(id);
+  };
+  performance.now = () => (on && inGame) ? now : realNow();
+  return {
+    get on(){ return on; }, get now(){ return now; },
+    game(fn){ const prev = inGame; inGame = true; try { return fn(); } finally { inGame = prev; } },
+    start(){ now = realNow(); on = true; },
+    stop(){ if (!on) return; on = false; const left = timers; timers = []; for (const t of left) realSet(t.fn, Math.max(0, t.due - now), ...t.args); },
+    advance(ms){
+      now += ms;
+      for (;;){
+        let best = -1;
+        for (let i = 0; i < timers.length; i++){ const t = timers[i]; if (t.due <= now && (best < 0 || t.due < timers[best].due || (t.due === timers[best].due && t.seq < timers[best].seq))) best = i; }
+        if (best < 0) break;
+        const t = timers.splice(best, 1)[0];
+        try { t.fn(...t.args); } catch(e){ console.error(e); }
+        if (!on) break;
+      }
+    }
+  };
+})();
 const CW = 1000, CH = 600, PXU = 20;
 const cv = $('cv'), ctx = cv.getContext('2d'); cv.width = CW; cv.height = CH;
+// While recording at high resolution the game canvas is rendered with more pixels
+// (same logical CW x CH coordinates) so the exported video is sharp, not upscaled.
+let renderScale = 1;
+function setRenderScale(s){
+  s = Math.round(s * 100) / 100;
+  if (s === renderScale && cv.width === Math.round(CW * s)) return;
+  renderScale = s; cv.width = Math.round(CW * s); cv.height = Math.round(CH * s);
+}
 const tc = document.createElement('canvas'); tc.width = CW; tc.height = CH;
 const tctx = tc.getContext('2d');
 const X = x => (x + 25) * PXU, Y = y => (15 - y) * PXU;
@@ -287,9 +337,12 @@ let videoMode = false, directorMode = true, highlightCards = true, recorder = nu
 let recordCanvas = null, recordCtx = null, videoOrientation = 'landscape';
 let recordStream = null, recordTrack = null, recordMime = '';
 let recordingMode = null, mbOutput = null, mbVideoSource = null, mbAudioSource = null, mbRecordStart = 0;
+let mbAudioMode = null, mbLastTs = 0, mbDriver = null, recSession = 0, exporting = false, mbVCodec = '', mbACodec = '', mbNextEmit = 0;
+const avoidCodecs = new Set();   // 'codec@WxH' combos whose encoder failed on this device
+const AUDIO_SYNC_MS = 0; // nudge exported sound: positive = later, negative = earlier
 let recordingCard = null, battleNumber = 0, cameraShotCount = 0;
 let lastFired = null, lastSay = null; // feed the portrait video's text panel
-let nextFrameDue = 0;
+let nextFrameDue = 0, recordFps = 30, recordLW = 960, recordLH = 540, recordKX = 1, recordKY = 1;
 let seriesTotal = 1, seriesRound = 1, seriesKinds = [], seriesPer = 1, seriesWins = {};
 const camera = {x:CW/2, y:CH/2, zoom:1, tx:CW/2, ty:CH/2, tz:1};
 const inp = $('inp');
@@ -424,55 +477,149 @@ function simulate(f, sh, dir){
    free-running timer, and a freshly-opened audio tap for every recording
    instead of a single tap re-used for the app's whole lifetime. */
 function mbSupported(){
-  return !!(window.MB && window.MB.Output && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined');
+  return !!(window.MB && window.MB.Output && typeof VideoEncoder !== 'undefined');
 }
 function recordingSupported(){ return mbSupported() || !!(cv.captureStream && window.MediaRecorder); }
+function setExporting(on){
+  exporting = on; $('again').disabled = on; $('toMenu').disabled = on;
+}
 function resetVideoExport(){
+  recSession++;   // anything still finishing from an older recording is now ignored
+  setExporting(false);
   if (finishRecordingTimer){ clearTimeout(finishRecordingTimer); finishRecordingTimer = null; }
   if (recorder && recorder.state !== 'inactive'){ try { recorder.stop(); } catch(e){} }
   recorder = null; recordedChunks = [];
   if (recordTrack){ try { recordTrack.stop(); } catch(e){} }
   recordStream = null; recordTrack = null;
   if (mbOutput && mbOutput.state !== 'finalized' && mbOutput.state !== 'canceled'){ try { mbOutput.cancel(); } catch(e){} }
-  mbOutput = null; mbVideoSource = null; mbAudioSource = null; recordingMode = null;
-  recordCanvas = null; recordCtx = null; nextFrameDue = 0;
+  mbOutput = null; mbVideoSource = null; mbAudioSource = null; recordingMode = null; mbAudioMode = null; mbDriver = null; mbLastTs = 0; mbVCodec = '';
+  VT.stop(); SFX.endLog();
+  recordCanvas = null; recordCtx = null; nextFrameDue = 0; setRenderScale(1);
   SFX.closeTap();
   if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
-  $('exportVideo').classList.remove('show'); $('exportVideo').removeAttribute('href'); $('recBadge').classList.remove('on');
+  const ev = $('exportVideo'); ev.classList.remove('show', 'busy'); ev.removeAttribute('href'); $('recBadge').classList.remove('on');
+}
+function exportBusy(text){ const ev = $('exportVideo'); ev.removeAttribute('href'); ev.textContent = text; ev.classList.add('show', 'busy'); }
+function exportReady(url, ext){
+  videoUrl = url; const ev = $('exportVideo');
+  ev.href = url; ev.download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.' + ext;
+  const label = {avc:'H.264',vp9:'VP9',av1:'AV1',hevc:'H.265'};
+  ev.textContent = '\u2b07 Export video (' + ext.toUpperCase() + (recordingMode === 'legacy' ? ' \u00b7 basic recorder' : (mbVCodec && ext === 'mp4' ? ' \u00b7 ' + (label[mbVCodec] || mbVCodec) : '')) + ')'; ev.classList.remove('busy'); ev.classList.add('show');
+}
+function exportFailed(){
+  const ev = $('exportVideo'); ev.removeAttribute('href'); ev.textContent = 'Video export failed'; ev.classList.remove('busy'); ev.classList.add('show');
 }
 function setupRecordCanvas(){
   videoOrientation = $('videoOrientation').value;
+  const portrait = videoOrientation === 'portrait';
+  const shortSide = +$('videoRes').value || 720, longSide = Math.round(shortSide * 16 / 9 / 2) * 2;
+  recordFps = +$('videoFps').value || 30;
+  // Everything is laid out in fixed "logical" units and scaled to the chosen resolution.
+  recordLW = portrait ? 720 : 960; recordLH = portrait ? 1280 : 540;
   recordCanvas = document.createElement('canvas');
-  recordCanvas.width = videoOrientation === 'portrait' ? 720 : 960;
-  recordCanvas.height = videoOrientation === 'portrait' ? 1280 : 540;
+  recordCanvas.width = portrait ? shortSide : longSide;
+  recordCanvas.height = portrait ? longSide : shortSide;
+  recordKX = recordCanvas.width / recordLW; recordKY = recordCanvas.height / recordLH;
+  setRenderScale(Math.min(2, Math.max(1, portrait ? recordCanvas.width / CW : Math.max(recordCanvas.width / CW, recordCanvas.height / CH))));
   recordCtx = recordCanvas.getContext('2d', {alpha:false, desynchronized:true});
   nextFrameDue = 0;
   composeRecordingFrame(performance.now());
 }
 async function startVideoRecording(){
   resetVideoExport();
-  if (!videoMode || !recordingSupported()){ if (videoMode) setMsg('Video export is not supported in this browser.', true); return; }
-  if (mbSupported()){ try { await startVideoRecordingMB(); return; } catch(e){ console.error(e); resetVideoExport(); } }
+  if (!videoMode) return;
+  const sid = recSession;
+  if (window.MBReady) await Promise.race([window.MBReady, new Promise(r => setTimeout(r, 6000))]);
+  if (sid !== recSession) return;
+  let why = '';
+  if (!recordingSupported()){ setMsg('Video export is not supported in this browser.', true); return; }
+  if (mbSupported()){
+    try { await startVideoRecordingMB(); return; } catch(e){ console.error(e); why = (e && e.message) || String(e); if (sid !== recSession) return; resetVideoExport(); }
+  } else why = window.MB ? 'this browser has no WebCodecs video encoder' : 'the encoder library did not load';
+  setMsg('Precise export unavailable (' + why + '). Using the basic recorder - sound may drift.', true);
   startVideoRecordingLegacy();
 }
 async function startVideoRecordingMB(){
-  const MB = window.MB;
+  const MB = window.MB, sid = recSession;
   setupRecordCanvas();
-  const audioStream = SFX.openTap();
-  mbOutput = new MB.Output({format: new MB.Mp4OutputFormat({fastStart: 'in-memory'}), target: new MB.BufferTarget()});
-  mbVideoSource = new MB.CanvasSource(recordCanvas, {codec: 'avc', quality: new MB.Quality('high')});
-  mbOutput.addVideoTrack(mbVideoSource, {frameRate: 30});
-  const audioTrack = audioStream && audioStream.getAudioTracks()[0];
-  if (audioTrack){
-    mbAudioSource = new MB.MediaStreamAudioTrackSource(audioTrack, {codec: 'aac', quality: new MB.Quality('high')});
-    mbAudioSource.errorPromise.catch(e => console.error(e));
-    mbOutput.addAudioTrack(mbAudioSource);
+  // Pick the first video codec this device can really encode at this size. H.264 is
+  // best for compatibility, but many phones cannot do it at 1440p/60. VP9/AV1 are
+  // software-encoded (slower, but that only lengthens the export - sync is unaffected).
+  const W = recordCanvas.width, H = recordCanvas.height;
+  let vcodec = null;
+  for (const c of ['avc', 'vp9', 'av1', 'hevc']){
+    if (avoidCodecs.has(c + '@' + W + 'x' + H)) continue;
+    try { if (!MB.canEncodeVideo || await MB.canEncodeVideo(c, {width: W, height: H, bitrate: MB.QUALITY_HIGH})){ vcodec = c; break; } } catch(e){}
+    if (sid !== recSession) return;
   }
-  await mbOutput.start();
+  if (!vcodec) throw new Error('no video encoder on this device can do ' + W + 'x' + H);
+  let acodec = 'aac';
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const wantAudio = !!(MB.AudioBufferSource && OAC);
+  if (wantAudio && MB.canEncodeAudio){
+    try { if (!(await MB.canEncodeAudio('aac', {numberOfChannels: 2, sampleRate: 48000, bitrate: 192000}))) acodec = 'opus'; } catch(e){ acodec = 'opus'; }
+    if (sid !== recSession) return;
+  }
+  mbOutput = new MB.Output({format: new MB.Mp4OutputFormat({fastStart: 'in-memory'}), target: new MB.BufferTarget()});
+  // Mediabunny's option is `bitrate` (number or MB.QUALITY_HIGH), not `quality`.
+  mbVideoSource = new MB.CanvasSource(recordCanvas, {codec: vcodec, bitrate: MB.QUALITY_HIGH});
+  mbOutput.addVideoTrack(mbVideoSource, {frameRate: recordFps});
+  mbVCodec = vcodec; mbACodec = wantAudio ? acodec : 'none';
+  mbAudioMode = null; mbAudioSource = null;
+  if (wantAudio){
+    mbAudioSource = new MB.AudioBufferSource({codec: acodec, bitrate: 192000});
+    mbOutput.addAudioTrack(mbAudioSource);
+    mbAudioMode = 'buffer';
+  }
+  const outputNow = mbOutput;
+  await outputNow.start();
+  if (sid !== recSession || outputNow !== mbOutput){ try { outputNow.cancel(); } catch(e){} return; }
   recordingMode = 'mediabunny';
-  mbRecordStart = performance.now();
+  mbLastTs = 0;
+  VT.start();                       // from here on the game runs on the virtual clock
+  mbRecordStart = VT.now;
+  if (mbAudioMode === 'buffer') SFX.beginLog(mbRecordStart);
   nextFrameDue = 0;
-  $('recBadge').classList.add('on');
+  $('recBadge').textContent = 'REC 0:00 \u00b7 ' + mbVCodec; $('recBadge').classList.add('on');
+  console.log('Precise export:', W + 'x' + H, recordFps + 'fps', mbVCodec, mbACodec);
+  mbDriver = vtDrive(sid);
+}
+// Fixed-step capture loop: 60 game ticks per virtual second, a video frame every 1/fps.
+// Awaiting the encoder gives natural backpressure, so no frame is ever dropped.
+async function vtDrive(sid){
+  const TICK = 1000 / 60, FI = 1000 / recordFps;
+  const ch = new MessageChannel(); let nextEmit = VT.now, ticks = 0; mbNextEmit = nextEmit;
+  const yieldUI = () => new Promise(r => { ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
+  try {
+    while (sid === recSession && recordingMode === 'mediabunny'){
+      VT.game(() => { VT.advance(TICK); });               // due timers (bot typing, holds, cards...)
+      if (sid !== recSession || recordingMode !== 'mediabunny') break;
+      VT.game(() => { update(); updateCamera(); });       // one game step, exactly like one 60 Hz frame
+      if (VT.now + 0.001 >= nextEmit){
+        nextEmit += FI; if (nextEmit < VT.now) nextEmit = VT.now + FI; mbNextEmit = nextEmit;
+        VT.game(() => { draw(VT.now); composeRecordingFrame(VT.now); });
+        const ts = Math.max(0, (VT.now - mbRecordStart) / 1000);
+        if (mbLastTs === 0 || ts > mbLastTs){
+          mbLastTs = ts;
+          await mbVideoSource.add(ts, 1 / recordFps);
+          if (ticks % 30 === 0) $('recBadge').textContent = 'REC ' + Math.floor(ts / 60) + ':' + String(Math.floor(ts % 60)).padStart(2, '0') + ' \u00b7 ' + mbVCodec;
+        }
+      }
+      if (++ticks % 2 === 0) await yieldUI();             // let the page paint / stay responsive
+    }
+  } catch(e){
+    console.error(e);
+    if (sid === recSession && recordingMode === 'mediabunny'){
+      const early = mbLastTs < 3, key = mbVCodec + '@' + recordCanvas.width + 'x' + recordCanvas.height;
+      recordingMode = null; VT.stop(); setRenderScale(1); $('recBadge').classList.remove('on');
+      if (early && mbVCodec && !avoidCodecs.has(key)){
+        // This encoder can't really do this size/fps here - restart the battle with the next codec.
+        avoidCodecs.add(key); setMsg(mbVCodec + ' failed at this size - retrying with another encoder\u2026', true);
+        setTimeout(() => startGame(), 50); return;
+      }
+      setExporting(false); exportFailed(); setMsg('Video encoder error: ' + ((e && e.message) || e), true);
+    }
+  }
 }
 function startVideoRecordingLegacy(){
   setupRecordCanvas();
@@ -486,35 +633,34 @@ function startVideoRecordingLegacy(){
   const types = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4;codecs=h264,aac','video/mp4','video/webm;codecs=vp8,opus','video/webm'];
   const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
   try {
-    recorder = new MediaRecorder(recordStream, mimeType ? {mimeType, videoBitsPerSecond:3000000, audioBitsPerSecond:128000} : undefined);
-    recordMime = recorder.mimeType || mimeType || 'video/webm';
-    recorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
-    recorder.onstop = () => {
-      if (!recordedChunks.length) return;
-      const mime = recorder.mimeType || recordMime;
-      const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
-      videoUrl = URL.createObjectURL(new Blob(recordedChunks, {type: mime}));
-      $('exportVideo').href = videoUrl;
-      $('exportVideo').download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.' + ext;
-      $('exportVideo').textContent = ext === 'mp4' ? '\u2b07 Export video (MP4)' : '\u2b07 Export video (WebM)';
-      $('exportVideo').classList.add('show'); $('recBadge').classList.remove('on');
+    const sid = recSession, chunks = [];
+    const rec = recorder = new MediaRecorder(recordStream, mimeType ? {mimeType, videoBitsPerSecond:Math.max(2e6, Math.min(3e7, Math.round(recordCanvas.width * recordCanvas.height * recordFps * 0.09))), audioBitsPerSecond:128000} : undefined);
+    recordMime = rec.mimeType || mimeType || 'video/webm';
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      if (sid !== recSession) return;          // belongs to an older recording, ignore
+      setRenderScale(1); $('recBadge').classList.remove('on'); setExporting(false);
+      if (!chunks.length){ exportFailed(); return; }
+      const mime = rec.mimeType || recordMime;
+      exportReady(URL.createObjectURL(new Blob(chunks, {type: mime})), mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm');
     };
-    recorder.start(); recordingMode = 'legacy'; $('recBadge').classList.add('on');
+    rec.start(); recordingMode = 'legacy'; $('recBadge').textContent = 'REC (basic recorder)'; $('recBadge').classList.add('on');
   } catch(e){ recorder = null; SFX.closeTap(); setMsg('This browser could not start video recording.', true); }
 }
 // Called once per real animation frame from loop(). Redraws the export canvas
 // and hands the encoder exactly one new video frame, capped to ~30fps by
 // skipping (never delaying) pushes - still just one clock, never a second timer.
+// Frame pacing on a fixed grid, so 24/30/60 fps stay steady on 60 or 120 Hz screens.
+function frameDue(t){
+  const iv = 1000 / recordFps;
+  if (!nextFrameDue) nextFrameDue = t;
+  if (t + 3 < nextFrameDue) return false;
+  nextFrameDue += iv; if (nextFrameDue < t - iv) nextFrameDue = t + iv;
+  return true;
+}
 function pushRecordingFrame(t){
-  if (recordingMode === 'mediabunny'){
-    if (!mbVideoSource || t < nextFrameDue) return;
-    nextFrameDue = t + 33;
-    composeRecordingFrame(t);
-    mbVideoSource.add((t - mbRecordStart) / 1000, 1 / 30).catch(e => console.error(e));
-    return;
-  }
-  if (!recordTrack || t < nextFrameDue) return;
-  nextFrameDue = t + 33;
+  if (recordingMode === 'mediabunny') return;   // vtDrive() produces these frames
+  if (!recordTrack || !frameDue(t)) return;
   composeRecordingFrame(t);
   recordTrack.requestFrame();
 }
@@ -554,7 +700,7 @@ function pvCaption(c, text, cx, y, size, maxW, alpha){
   c.restore();
 }
 function composePortraitScene(t){
-  const c = recordCtx, rw = recordCanvas.width, rh = recordCanvas.height, m = 30, iw = rw - m * 2;
+  const c = recordCtx, rw = recordLW, rh = recordLH, m = 30, iw = rw - m * 2;
   c.save();
   pvBackdrop(c, rw, rh);
   c.textBaseline = 'alphabetic'; c.textAlign = 'left';
@@ -654,7 +800,8 @@ function composePortraitScene(t){
 }
 function composeRecordingFrame(t){
   if (!recordCtx || !recordCanvas) return;
-  const rw = recordCanvas.width, rh = recordCanvas.height;
+  const rw = recordLW, rh = recordLH;
+  recordCtx.setTransform(recordKX, 0, 0, recordKY, 0, 0);
   if (rh > rw && teams){
     composePortraitScene(t);
   } else {
@@ -697,29 +844,41 @@ function finishVideoRecording(card){
   if (!recordingMode) return;
   const delay = highlightCards ? 3200 : 1200;
   if (highlightCards) recordingCard = Object.assign({started:performance.now(),until:performance.now()+60000,hold:true},card);
+  setExporting(true); exportBusy('Finishing recording\u2026');
   finishRecordingTimer = setTimeout(() => finalizeRecording(), delay);
 }
 async function finalizeRecording(){
+  const sid = recSession;
   if (recordingMode === 'mediabunny'){
-    const output = mbOutput; recordingMode = null;
+    const output = mbOutput, vsrc = mbVideoSource, asrc = mbAudioSource, amode = mbAudioMode, drv = mbDriver;
+    recordingMode = null;                       // tells vtDrive() to stop
+    VT.stop();                                  // game returns to real time
     if (!output) return;
+    setExporting(true); exportBusy('Preparing video\u2026');
     try {
-      mbVideoSource && mbVideoSource.close();
-      mbAudioSource && mbAudioSource.close();
-      await output.finalize();
-      const buf = output.target.buffer;
-      if (buf && buf.byteLength){
-        videoUrl = URL.createObjectURL(new Blob([buf], {type: 'video/mp4'}));
-        $('exportVideo').href = videoUrl;
-        $('exportVideo').download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.mp4';
-        $('exportVideo').textContent = '\u2b07 Export video (MP4)';
-        $('exportVideo').classList.add('show');
+      if (drv) await drv;                       // last frame is fully encoded
+      if (sid !== recSession) return;
+      vsrc && vsrc.close();
+      if (amode === 'buffer' && asrc){
+        const buf = await SFX.renderLog(mbLastTs + 1 / recordFps);
+        if (sid !== recSession) return;
+        if (buf) await asrc.add(buf);
       }
-    } catch(e){ console.error(e); setMsg('Video export failed.', true); }
-    finally { $('recBadge').classList.remove('on'); SFX.closeTap(); mbOutput = null; mbVideoSource = null; mbAudioSource = null; }
+      asrc && asrc.close();
+      await output.finalize();
+      if (sid !== recSession) return;
+      const buf = output.target.buffer;
+      if (!buf || !buf.byteLength) throw new Error('empty file');
+      exportReady(URL.createObjectURL(new Blob([buf], {type: 'video/mp4'})), 'mp4');
+    } catch(e){
+      console.error(e);
+      if (sid === recSession){ exportFailed(); setMsg('Video export failed: ' + (e && e.message || e), true); }
+    } finally {
+      if (sid === recSession){ setRenderScale(1); $('recBadge').classList.remove('on'); SFX.endLog(); setExporting(false); mbOutput = null; mbVideoSource = null; mbAudioSource = null; mbAudioMode = null; mbDriver = null; }
+    }
     return;
   }
-  if (recorder && recorder.state !== 'inactive') recorder.stop();
+  if (recorder && recorder.state !== 'inactive'){ setExporting(true); exportBusy('Preparing video\u2026'); recorder.stop(); }
 }
 function cameraTarget(){
 
@@ -1096,13 +1255,18 @@ function setupBattleRound(first){
       s.name=BOTS[k].name+(seriesPer>1?' '+(j+1):''); s.color=BOTS[k].color; s.kind=k;
     }
   });
-  refreshTerrain(); turnTeam=teams.length-1; inp.value=''; if(first) startVideoRecording();
+  refreshTerrain(); turnTeam=teams.length-1; inp.value='';
+  const gid0=gameId;
+  const go=()=>VT.game(()=>{ if(gid0!==gameId) return;
   if (videoMode && highlightCards){
     const now = performance.now();
     const firstTitle=seriesTotal>1?'BOT BATTLE SERIES':'BATTLE #'+battleNumber;
     recordingCard={eyebrow:'Graphwar',title:first?(seriesTotal>1?seriesTotal+'-round battle':'Bot battle'):'Round '+seriesRound,subtitle:first?seriesKinds.map(k=>BOTS[k].name.replace(' Bot','')).join(' vs '):scoreLine(),detail:allAlive().length+' bots, '+teams.length+' teams',started:prevCard?prevCard.started:now,textStart:now,instant:true,until:now+2600};
     const gid=gameId; setTimeout(()=>{ if(gid===gameId) nextTurn(); },4200);
   } else nextTurn();
+  });
+  // Wait until the recorder (and its virtual clock) is running so no game timer starts on the wrong clock.
+  if(first) startVideoRecording().then(go); else go();
 }
 function startBattle(){
   resetVideoExport(); battleNumber++; seriesRound=1; seriesTotal=Math.max(1,+$('battleRounds').value||1); seriesWins={};
@@ -1188,24 +1352,60 @@ const SFX = (() => {
     if (ac.state === 'suspended') ac.resume().catch(() => {});
     return ac;
   }
-  function tone(f0, f1, dur, type, vol, delay = 0){
-    const a = ctxA(); if (!a) return; const t = a.currentTime + delay;
+  // Voices take an explicit context + destination so the same code can play live
+  // and be re-rendered offline for the exported video.
+  function playTone(a, dest, t, f0, f1, dur, type, vol){
     const o = a.createOscillator(), g = a.createGain(); o.type = type;
     o.frequency.setValueAtTime(f0, t); if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
     g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+    o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.02);
   }
-  function noise(dur, vol, f0, f1, delay = 0){
-    const a = ctxA(); if (!a) return; const t = a.currentTime + delay, n = Math.floor(a.sampleRate * dur);
+  function playNoise(a, dest, t, dur, vol, f0, f1){
+    const n = Math.floor(a.sampleRate * dur);
     const buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
     const src = a.createBufferSource(); src.buffer = buf;
     const fl = a.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.setValueAtTime(f0, t); fl.frequency.exponentialRampToValueAtTime(Math.max(40, f1), t + dur);
     const g = a.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(fl); fl.connect(g); g.connect(master); src.start(t);
+    src.connect(fl); fl.connect(g); g.connect(dest); src.start(t);
+  }
+  let log = null, logStart = 0;
+  // A sound belongs to the first exported video frame that can show its cause.
+  const sfxAt = () => { const n = performance.now(); return (n + 0.001 >= mbNextEmit) ? n : mbNextEmit; };
+  // While exporting, every sound is also logged; the video's audio is rendered offline from that
+  // log (exact timing), while the live sound is just for you to hear during recording.
+  function tone(f0, f1, dur, type, vol, delay = 0){
+    if (VT.on && on && log) log.push({at: sfxAt() + AUDIO_SYNC_MS, k: 't', p: [f0, f1, dur, type, vol], delay});   // for the exported video
+    // ...and still play it live so you can hear the game while it records
+    const a = ctxA(); if (!a) return;
+    playTone(a, master, a.currentTime + delay, f0, f1, dur, type, vol);
+  }
+  function noise(dur, vol, f0, f1, delay = 0){
+    if (VT.on && on && log) log.push({at: sfxAt() + AUDIO_SYNC_MS, k: 'n', p: [dur, vol, f0, f1], delay});
+    // live playback continues below
+    const a = ctxA(); if (!a) return;
+    playNoise(a, master, a.currentTime + delay, dur, vol, f0, f1);
   }
   return {
     get on(){ return on; }, set on(v){ on = v; },
     unlock(){ ctxA(); },
+    hasAudio(){ return !!ctxA(); },
+    beginLog(startMs){ log = []; logStart = startMs; },
+    endLog(){ log = null; },
+    // Re-renders every logged sound, at its recorded time, into one AudioBuffer.
+    async renderLog(durSec){
+      const events = log || []; log = null;
+      const sr = 48000, len = Math.max(sr, Math.ceil((durSec + 0.05) * sr));
+      const off = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(2, len, sr);
+      const m = off.createGain(); m.gain.value = 1.8;
+      const c = off.createDynamicsCompressor(); c.threshold.value = -14; c.ratio.value = 6;
+      m.connect(c); c.connect(off.destination);
+      for (const e of events){
+        const t = Math.max(0, (e.at - logStart) / 1000) + e.delay;
+        if (t >= durSec) continue;
+        if (e.k === 't') playTone(off, m, t, ...e.p); else playNoise(off, m, t, ...e.p);
+      }
+      return off.startRendering();
+    },
     // A fresh destination node each time we start recording, so the captured
     // audio always begins at the same instant as the captured video instead
     // of carrying over however long the shared AudioContext had already
@@ -1373,7 +1573,8 @@ function pathStroke(pts, n){
   ctx.stroke();
 }
 function draw(t){
-  updateCamera();
+  if (!VT.on) updateCamera();
+  ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
   ctx.save();
   if (videoMode && battle){ ctx.translate(CW/2,CH/2); ctx.scale(camera.zoom,camera.zoom); ctx.translate(-camera.x,-camera.y); }
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, CW, CH);
@@ -1402,9 +1603,11 @@ function draw(t){
   ctx.restore();
 }
 function loop(t){
-  update();
-  draw(t);
-  pushRecordingFrame(t);
+  if (!VT.on){            // while exporting, vtDrive() steps the game instead
+    update();
+    draw(t);
+    pushRecordingFrame(t);
+  }
   requestAnimationFrame(loop);
 }
 /* ---------- wake lock (keeps the screen on while playing) ---------- */
