@@ -402,6 +402,7 @@ function compile(str){
 }
 
 /* ---------- game state ---------- */
+let roundPending = false; // true between round setup and the first turn (intro card showing)
 let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [], preview = null;
 let auto = false, gameId = 0, botBusy = false;
 let battle = false, speed = 1, stall = 0, feedList = [];
@@ -466,6 +467,7 @@ function startClassic(){
   turnTeam = 1; inp.value = ''; nextTurn();
 }
 function nextTurn(){
+  roundPending = false;
   if (battle){
     botBusy = false; shot = null; preview = null;
     const n = teams.length;
@@ -508,7 +510,7 @@ const canInput = () => state === 'aim' && turnTeam === (mpState.mode === 'multip
 function updateUI(){
   if (battle){
     const roundLabel = seriesTotal > 1 ? 'Round ' + seriesRound + '/' + seriesTotal + ' — ' : '';
-    $('status').textContent = state === 'over' ? roundLabel + 'Battle over' : roundLabel + 'Bot Battle — ' + (current ? current.name + "'s turn" : '') + '   |   teams alive: ' + teams.filter((T, t) => aliveOf(t).length).length + '/' + teams.length + '   soldiers: ' + allAlive().length;
+    $('status').textContent = (state === 'over' && !roundPending) ? roundLabel + 'Battle over' : roundLabel + 'Bot Battle — ' + (current ? current.name + "'s turn" : '') + '   |   teams alive: ' + teams.filter((T, t) => aliveOf(t).length).length + '/' + teams.length + '   soldiers: ' + allAlive().length;
     renderBoard(); inp.readOnly = true; $('fire').disabled = true; $('solve').disabled = true; return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
@@ -683,6 +685,9 @@ async function startVideoRecordingMB(){
 async function vtDrive(sid){
   const TICK = 1000 / 60, FI = 1000 / recordFps;
   const ch = new MessageChannel(); let nextEmit = VT.now, ticks = 0; mbNextEmit = nextEmit;
+  // Encode in the background: add() snapshots the canvas immediately, so the game can keep
+  // simulating while earlier frames are still encoding (order and timestamps are unchanged).
+  const pending = [], MAXQ = 6;
   const yieldUI = () => new Promise(r => { ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
   try {
     while (sid === recSession && recordingMode === 'mediabunny'){
@@ -695,12 +700,14 @@ async function vtDrive(sid){
         const ts = Math.max(0, (VT.now - mbRecordStart) / 1000);
         if (mbLastTs === 0 || ts > mbLastTs){
           mbLastTs = ts;
-          await mbVideoSource.add(ts, 1 / recordFps);
+          pending.push(mbVideoSource.add(ts, 1 / recordFps));
+          if (pending.length >= MAXQ) await pending.shift();
           if (ticks % 30 === 0) $('recBadge').textContent = 'REC ' + Math.floor(ts / 60) + ':' + String(Math.floor(ts % 60)).padStart(2, '0') + ' \u00b7 ' + mbVCodec;
         }
       }
       if (++ticks % 6 === 0) await yieldUI();             // let the page paint / stay responsive
     }
+    await Promise.all(pending);                            // every frame is encoded before finishing
   } catch(e){
     console.error(e);
     if (sid === recSession && recordingMode === 'mediabunny'){
@@ -801,7 +808,7 @@ function composePortraitScene(t){
   const total = teams.reduce((a, T) => a + T.soldiers.length, 0), alive = allAlive().length;
   const aliveTeams = teams.filter((T, i) => aliveOf(i).length).length;
   const down = total ? 1 - alive / total : 0;
-  const cur = current;
+  const cur = current, isOver = state === 'over' && !roundPending;
 
   // progress line along the very top
   c.fillStyle = 'rgba(255,255,255,.18)'; c.fillRect(0, 0, rw, 6);
@@ -811,7 +818,7 @@ function composePortraitScene(t){
   c.font = '900 30px ' + PV_BOLD; c.fillStyle = '#f7a21b'; c.fillText('GRAPHWAR', m, 64);
   c.textAlign = 'right'; c.font = '700 26px ' + PV_SANS; c.fillStyle = '#d8e6d3';
   c.fillText(seriesTotal > 1 ? 'Round ' + seriesRound + ' of ' + seriesTotal : 'Bot battle', rw - m, 62);
-  const hook = state === 'over' ? 'BATTLE OVER' : (aliveTeams === 2 && teams.length > 2) ? 'FINAL TWO' : down < 0.1 ? 'WHO WINS THIS?' : alive + ' LEFT STANDING';
+  const hook = isOver ? 'BATTLE OVER' : (aliveTeams === 2 && teams.length > 2) ? 'FINAL TWO' : down < 0.1 ? 'WHO WINS THIS?' : alive + ' LEFT STANDING';
   pvCaption(c, hook, rw / 2, 178, 58, iw);
 
   // battlefield, full width
@@ -827,7 +834,7 @@ function composePortraitScene(t){
   c.textAlign = 'left';
   c.fillStyle = col; c.beginPath(); c.arc(m + 11, y - 10, 11, 0, 7); c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 2.5; c.stroke();
   c.fillStyle = '#fff'; c.font = '700 32px ' + PV_SANS; c.fillText(cur ? nm(cur) : 'Get ready…', m + 32, y, iw - 230);
-  const status = !cur || state === 'over' ? '' : typing ? 'typing…' : state === 'aim' ? 'thinking…' : state === 'anim' ? 'fired' : '';
+  const status = !cur || isOver ? '' : typing ? 'typing…' : state === 'aim' ? 'thinking…' : state === 'anim' ? 'fired' : '';
   c.textAlign = 'right'; c.fillStyle = '#c5d6c0'; c.font = '400 26px ' + PV_SANS; c.fillText(status, rw - m, y - 2); c.textAlign = 'left';
   y += 16;
   const eh = 140; rrect(c, m, y, iw, eh, 14); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill();
@@ -835,7 +842,7 @@ function composePortraitScene(t){
   if (typing) txt = cur.typing; else if (lastFired && lastFired.who === cur) txt = lastFired.text;
   if (txt === null){
     c.fillStyle = '#9fb59a'; c.font = 'italic 400 28px ' + PV_SANS; c.textAlign = 'center';
-    c.fillText(state === 'over' ? 'Battle over' : '…', rw / 2, y + eh / 2 + 9); c.textAlign = 'left';
+    c.fillText(isOver ? 'Battle over' : '…', rw / 2, y + eh / 2 + 9); c.textAlign = 'left';
   } else {
     const full = 'y = ' + txt + (typing ? '|' : ''), pad = 20, innerW = iw - pad * 2, innerH = eh - pad * 2 + 6, sizes = [34, 30, 27, 24, 21, 19, 17, 15];
     let fs = 15, lines = null;
@@ -879,7 +886,7 @@ function composePortraitScene(t){
     const kind = T.soldiers[0].kind, up = T.soldiers.filter(s => s.alive).length, len = T.soldiers.length;
     const cx = m + padX + (i % cols) * (cwid + gx), cyy = top + padY + Math.floor(i / cols) * rowH + rowH / 2;
     const wins = seriesTotal > 1 ? seriesWins[kind] || 0 : 0;
-    const isTurn = state !== 'over' && cur && cur.team === i;
+    const isTurn = !isOver && cur && cur.team === i;
     if (isTurn){ rrect(c, cx - 8, cyy - rowH / 2 + 3, cwid + 16, rowH - 6, 10); c.fillStyle = 'rgba(255,255,255,.16)'; c.fill(); }
     c.globalAlpha = up ? 1 : .4;
     c.fillStyle = BOTS[kind].color; c.beginPath(); c.arc(cx + 10, cyy, 10, 0, 7); c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 2; c.stroke();
@@ -1042,7 +1049,7 @@ function afterShot(){
   if (battle){
     const up = teams.filter((T, t) => aliveOf(t).length); stall++;
     if (up.length <= 1 || stall >= 60){
-      state = 'over'; updateUI(); SFX.win();
+      roundPending = false; state = 'over'; updateUI(); SFX.win();
       const winnerKind = up.length === 1 ? up[0].soldiers[0].kind : null;
       const winnerName = winnerKind ? BOTS[winnerKind].name : null;
       const survivors = winnerKind ? aliveOf(teams.indexOf(up[0])).length : 0;
@@ -1087,7 +1094,7 @@ function afterShot(){
     return;
   }
   if (!a0 || !a1){
-    state = 'over'; updateUI(); SFX.win();
+    roundPending = false; state = 'over'; updateUI(); SFX.win();
     $('overtxt').textContent = a0 && !a1 ? 'You win!' : (!a0 && a1 ? 'Bots win!' : 'Draw!');
     $('over').style.display = 'flex';
     if (auto){ const gid = gameId; setTimeout(() => { if (gid === gameId && auto) startGame(); }, 2500); }
@@ -1450,7 +1457,7 @@ function setupBattleRound(first){
       s.name=BOTS[k].name+(seriesPer>1?' '+(j+1):''); s.color=BOTS[k].color; s.kind=k;
     }
   });
-  refreshTerrain(); turnTeam=teams.length-1; inp.value='';
+  refreshTerrain(); turnTeam=teams.length-1; inp.value=''; roundPending = true;
   const gid0=gameId;
   const go=()=>VT.game(()=>{ if(gid0!==gameId) return;
   if (videoMode && highlightCards){
