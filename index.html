@@ -685,9 +685,6 @@ async function startVideoRecordingMB(){
 async function vtDrive(sid){
   const TICK = 1000 / 60, FI = 1000 / recordFps;
   const ch = new MessageChannel(); let nextEmit = VT.now, ticks = 0; mbNextEmit = nextEmit;
-  // Encode in the background: add() snapshots the canvas immediately, so the game can keep
-  // simulating while earlier frames are still encoding (order and timestamps are unchanged).
-  const pending = [], MAXQ = 6;
   const yieldUI = () => new Promise(r => { ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
   try {
     while (sid === recSession && recordingMode === 'mediabunny'){
@@ -700,14 +697,12 @@ async function vtDrive(sid){
         const ts = Math.max(0, (VT.now - mbRecordStart) / 1000);
         if (mbLastTs === 0 || ts > mbLastTs){
           mbLastTs = ts;
-          pending.push(mbVideoSource.add(ts, 1 / recordFps));
-          if (pending.length >= MAXQ) await pending.shift();
+          await mbVideoSource.add(ts, 1 / recordFps);
           if (ticks % 30 === 0) $('recBadge').textContent = 'REC ' + Math.floor(ts / 60) + ':' + String(Math.floor(ts % 60)).padStart(2, '0') + ' \u00b7 ' + mbVCodec;
         }
       }
       if (++ticks % 6 === 0) await yieldUI();             // let the page paint / stay responsive
     }
-    await Promise.all(pending);                            // every frame is encoded before finishing
   } catch(e){
     console.error(e);
     if (sid === recSession && recordingMode === 'mediabunny'){
