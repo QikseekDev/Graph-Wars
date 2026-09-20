@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Graphwar</title>
+<script type="module">
+// Loads Mediabunny (https://mediabunny.dev), a WebCodecs-based MP4 muxer, from
+// a CDN. Video export works fine without this (see startVideoRecordingLegacy
+// in the main script) - this just upgrades it to a much more robust encoder
+// that doesn't rely on the browser's built-in MediaRecorder, which is what
+// was causing audio/video drift in exported clips. Loaded as a module purely
+// so we can `import` it directly; nothing else on the page depends on modules.
+import * as MB from 'https://cdn.jsdelivr.net/npm/mediabunny/+esm';
+window.MB = MB;
+</script>
 <style>
 :root{--bg:#a9d6a0;--panel:#e4f2df;--panel2:#5f8a59;--ink:#1a2a18;--muted:#33502f;--accent:#e08a00;--red:#c62828;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -276,8 +286,9 @@ let battle = false, speed = 1, stall = 0, feedList = [];
 let videoMode = false, directorMode = true, highlightCards = true, recorder = null, recordedChunks = [], videoUrl = null, finishRecordingTimer = null;
 let recordCanvas = null, recordCtx = null, videoOrientation = 'landscape';
 let recordStream = null, recordTrack = null, recordMime = '';
+let recordingMode = null, mbOutput = null, mbVideoSource = null, mbAudioSource = null, mbRecordStart = 0;
 let recordingCard = null, battleNumber = 0, cameraShotCount = 0;
-let lastRecordingDraw = 0;
+let nextFrameDue = 0;
 let seriesTotal = 1, seriesRound = 1, seriesKinds = [], seriesPer = 1, seriesWins = {};
 const camera = {x:CW/2, y:CH/2, zoom:1, tx:CW/2, ty:CH/2, tz:1};
 const inp = $('inp');
@@ -392,36 +403,84 @@ function simulate(f, sh, dir){
   return {path, hits, end};
 }
 
-/* ---------- cinematic video recording ---------- */
-function recordingSupported(){ return !!(cv.captureStream && window.MediaRecorder); }
+/* ---------- cinematic video recording ----------
+   Primary path: Mediabunny (https://mediabunny.dev), a real WebCodecs-based
+   MP4 muxer loaded from a CDN - see the <script type="module"> near the top
+   of <head>. It replaces the browser's built-in MediaRecorder, which is the
+   thing that was actually producing the drift: MediaRecorder treats a canvas
+   MediaStream and a live audio MediaStream as two independent black boxes and
+   mixes them together internally with no guarantee they share a clock, and
+   in practice canvas-captureStream recordings on Chrome/Android commonly
+   drift because of exactly that. Mediabunny instead encodes video frames and
+   audio samples itself (hardware-accelerated) and writes them into the MP4
+   with the exact timestamps we hand it, so there's no hidden muxing step
+   left to disagree about timing - video and audio are locked to the same
+   number line by construction.
+   Fallback path: if the library hasn't finished loading yet or the browser
+   doesn't support WebCodecs, we fall back to a captureStream()+MediaRecorder
+   recorder that still fixes the two real bugs found earlier: a manual
+   requestFrame() per real animation frame instead of captureStream's own
+   free-running timer, and a freshly-opened audio tap for every recording
+   instead of a single tap re-used for the app's whole lifetime. */
+function mbSupported(){
+  return !!(window.MB && window.MB.Output && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined');
+}
+function recordingSupported(){ return mbSupported() || !!(cv.captureStream && window.MediaRecorder); }
 function resetVideoExport(){
   if (finishRecordingTimer){ clearTimeout(finishRecordingTimer); finishRecordingTimer = null; }
   if (recorder && recorder.state !== 'inactive'){ try { recorder.stop(); } catch(e){} }
   recorder = null; recordedChunks = [];
   if (recordTrack){ try { recordTrack.stop(); } catch(e){} }
   recordStream = null; recordTrack = null;
+  if (mbOutput && mbOutput.state !== 'finalized' && mbOutput.state !== 'canceled'){ try { mbOutput.cancel(); } catch(e){} }
+  mbOutput = null; mbVideoSource = null; mbAudioSource = null; recordingMode = null;
+  recordCanvas = null; recordCtx = null; nextFrameDue = 0;
+  SFX.closeTap();
   if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
   $('exportVideo').classList.remove('show'); $('exportVideo').removeAttribute('href'); $('recBadge').classList.remove('on');
 }
-function startVideoRecording(){
-  resetVideoExport();
-  if (!videoMode || !recordingSupported()){ if (videoMode) setMsg('Video export is not supported in this browser.', true); return; }
+function setupRecordCanvas(){
   videoOrientation = $('videoOrientation').value;
   recordCanvas = document.createElement('canvas');
-  // A smaller frame keeps the encoder comfortably ahead of the game loop, which
-  // is what caused the stutter and the audio running ahead of the picture.
   recordCanvas.width = videoOrientation === 'portrait' ? 608 : 960;
   recordCanvas.height = videoOrientation === 'portrait' ? 1080 : 540;
   recordCtx = recordCanvas.getContext('2d', {alpha:false, desynchronized:true});
-  lastRecordingDraw = 0;
-  drawRecordingFrame(performance.now(), true);
-  // Let the browser timestamp both tracks from the same real-time media clock.
-  // Each source frame is copied immediately after the game renders below; the
-  // 30fps limit only caps duplicate frames and never invents video timestamps.
-  recordStream = recordCanvas.captureStream(30);
+  nextFrameDue = 0;
+  composeRecordingFrame(performance.now());
+}
+async function startVideoRecording(){
+  resetVideoExport();
+  if (!videoMode || !recordingSupported()){ if (videoMode) setMsg('Video export is not supported in this browser.', true); return; }
+  if (mbSupported()){ try { await startVideoRecordingMB(); return; } catch(e){ console.error(e); resetVideoExport(); } }
+  startVideoRecordingLegacy();
+}
+async function startVideoRecordingMB(){
+  const MB = window.MB;
+  setupRecordCanvas();
+  const audioStream = SFX.openTap();
+  mbOutput = new MB.Output({format: new MB.Mp4OutputFormat({fastStart: 'in-memory'}), target: new MB.BufferTarget()});
+  mbVideoSource = new MB.CanvasSource(recordCanvas, {codec: 'avc', quality: new MB.Quality('high')});
+  mbOutput.addVideoTrack(mbVideoSource, {frameRate: 30});
+  const audioTrack = audioStream && audioStream.getAudioTracks()[0];
+  if (audioTrack){
+    mbAudioSource = new MB.MediaStreamAudioTrackSource(audioTrack, {codec: 'aac', quality: new MB.Quality('high')});
+    mbAudioSource.errorPromise.catch(e => console.error(e));
+    mbOutput.addAudioTrack(mbAudioSource);
+  }
+  await mbOutput.start();
+  recordingMode = 'mediabunny';
+  mbRecordStart = performance.now();
+  nextFrameDue = 0;
+  $('recBadge').classList.add('on');
+}
+function startVideoRecordingLegacy(){
+  setupRecordCanvas();
+  // frameRequestRate 0 = manual mode: no internal timer, we push every frame ourselves.
+  recordStream = recordCanvas.captureStream(0);
   recordTrack = recordStream.getVideoTracks()[0];
-  const audio = SFX.stream && SFX.stream();
-  if (audio) for (const track of audio.getAudioTracks()) recordStream.addTrack(track);
+  recordTrack.requestFrame();
+  const audioStream = SFX.openTap();
+  if (audioStream) for (const track of audioStream.getAudioTracks()) recordStream.addTrack(track);
   // MP4 first so the file plays anywhere; WebM only as a fallback.
   const types = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4;codecs=h264,aac','video/mp4','video/webm;codecs=vp8,opus','video/webm'];
   const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
@@ -439,17 +498,27 @@ function startVideoRecording(){
       $('exportVideo').textContent = ext === 'mp4' ? '\u2b07 Export video (MP4)' : '\u2b07 Export video (WebM)';
       $('exportVideo').classList.add('show'); $('recBadge').classList.remove('on');
     };
-    // Keep the recording as one continuous media segment. Periodic MP4 chunks each
-    // carried their own timing metadata, so joining them made players report only
-    // the first few seconds (roughly the intro) as the complete duration.
-    recorder.start(); $('recBadge').classList.add('on');
-  } catch(e){ recorder = null; setMsg('This browser could not start video recording.', true); }
+    recorder.start(); recordingMode = 'legacy'; $('recBadge').classList.add('on');
+  } catch(e){ recorder = null; SFX.closeTap(); setMsg('This browser could not start video recording.', true); }
 }
-function drawRecordingFrame(frameTime, force){
+// Called once per real animation frame from loop(). Redraws the export canvas
+// and hands the encoder exactly one new video frame, capped to ~30fps by
+// skipping (never delaying) pushes - still just one clock, never a second timer.
+function pushRecordingFrame(t){
+  if (recordingMode === 'mediabunny'){
+    if (!mbVideoSource || t < nextFrameDue) return;
+    nextFrameDue = t + 33;
+    composeRecordingFrame(t);
+    mbVideoSource.add((t - mbRecordStart) / 1000, 1 / 30).catch(e => console.error(e));
+    return;
+  }
+  if (!recordTrack || t < nextFrameDue) return;
+  nextFrameDue = t + 33;
+  composeRecordingFrame(t);
+  recordTrack.requestFrame();
+}
+function composeRecordingFrame(t){
   if (!recordCtx || !recordCanvas) return;
-  const drawAt = typeof frameTime === 'number' ? frameTime : performance.now();
-  if (!force && drawAt-lastRecordingDraw < 33) return;
-  lastRecordingDraw = drawAt;
   const rw = recordCanvas.width, rh = recordCanvas.height;
   recordCtx.fillStyle = '#fff'; recordCtx.fillRect(0, 0, rw, rh);
   const scale = Math.max(rw / CW, rh / CH), dw = CW * scale, dh = CH * scale;
@@ -457,7 +526,7 @@ function drawRecordingFrame(frameTime, force){
   if (recordingCard){
     // Plain hand-made title card: flat colour, plain left-aligned text, nothing
     // flashy. No sweeping gradients, no animated stripes, no social tags.
-    const now = drawAt, elapsed = now-recordingCard.started, left = recordingCard.until-now;
+    const now = t, elapsed = now-recordingCard.started, left = recordingCard.until-now;
     const fade = Math.min(1, elapsed/200, left/200), unit = Math.min(rw,rh);
     recordCtx.save(); recordCtx.globalAlpha = Math.max(0, fade);
     recordCtx.fillStyle = '#1e3a1c'; recordCtx.fillRect(0,0,rw,rh);
@@ -480,12 +549,35 @@ function drawRecordingFrame(frameTime, force){
   }
 }
 function finishVideoRecording(card){
-  if (!recorder || recorder.state === 'inactive') return;
+  if (!recordingMode) return;
   const delay = highlightCards ? 3200 : 1200;
   if (highlightCards) recordingCard = Object.assign({started:performance.now(),until:performance.now()+2900},card);
-  finishRecordingTimer = setTimeout(() => { if (recorder && recorder.state !== 'inactive') recorder.stop(); }, delay);
+  finishRecordingTimer = setTimeout(() => finalizeRecording(), delay);
+}
+async function finalizeRecording(){
+  if (recordingMode === 'mediabunny'){
+    const output = mbOutput; recordingMode = null;
+    if (!output) return;
+    try {
+      mbVideoSource && mbVideoSource.close();
+      mbAudioSource && mbAudioSource.close();
+      await output.finalize();
+      const buf = output.target.buffer;
+      if (buf && buf.byteLength){
+        videoUrl = URL.createObjectURL(new Blob([buf], {type: 'video/mp4'}));
+        $('exportVideo').href = videoUrl;
+        $('exportVideo').download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.mp4';
+        $('exportVideo').textContent = '\u2b07 Export video (MP4)';
+        $('exportVideo').classList.add('show');
+      }
+    } catch(e){ console.error(e); setMsg('Video export failed.', true); }
+    finally { $('recBadge').classList.remove('on'); SFX.closeTap(); mbOutput = null; mbVideoSource = null; mbAudioSource = null; }
+    return;
+  }
+  if (recorder && recorder.state !== 'inactive') recorder.stop();
 }
 function cameraTarget(){
+
   // Follow a short section of the curve rather than its exact leading pixel. That
   // keeps dense sine waves (especially Swarm Bot) from pulling the camera up and
   // down on every wiggle while its horizontal progress remains easy to follow.
@@ -940,10 +1032,10 @@ $('newg').onclick = startGame; $('again').onclick = startGame;
 
 /* ---------- sound (synthesised WebAudio) ---------- */
 const SFX = (() => {
-  let ac = null, master = null, captureDest = null, on = true;
+  let ac = null, master = null, comp = null, on = true, tap = null;
   function ctxA(){
     if (!on) return null;
-    if (!ac){ try { ac = new (window.AudioContext || window.webkitAudioContext)(); master = ac.createGain(); master.gain.value = 1.8; const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6; master.connect(comp); comp.connect(ac.destination); captureDest = ac.createMediaStreamDestination(); comp.connect(captureDest); } catch(e){ return null; } }
+    if (!ac){ try { ac = new (window.AudioContext || window.webkitAudioContext)(); master = ac.createGain(); master.gain.value = 1.8; comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6; master.connect(comp); comp.connect(ac.destination); } catch(e){ return null; } }
     if (ac.state === 'suspended') ac.resume().catch(() => {});
     return ac;
   }
@@ -965,7 +1057,20 @@ const SFX = (() => {
   return {
     get on(){ return on; }, set on(v){ on = v; },
     unlock(){ ctxA(); },
-    stream(){ ctxA(); return captureDest ? captureDest.stream : null; },
+    // A fresh destination node each time we start recording, so the captured
+    // audio always begins at the same instant as the captured video instead
+    // of carrying over however long the shared AudioContext had already
+    // been running for (which used to make exports start "mid-sound").
+    openTap(){
+      const a = ctxA(); if (!a || !comp) return null;
+      this.closeTap();
+      tap = a.createMediaStreamDestination();
+      comp.connect(tap);
+      return tap.stream;
+    },
+    closeTap(){
+      if (tap){ try { comp && comp.disconnect(tap); } catch(e){} tap = null; }
+    },
     key(){ tone(1500 + Math.random() * 500, 900, 0.035, 'square', 0.12); },
     click(){ tone(700, 500, 0.06, 'triangle', 0.25); },
     fire(){ tone(260, 1300, 0.3, 'sawtooth', 0.18); noise(0.25, 0.3, 4000, 800); },
@@ -1150,7 +1255,7 @@ function draw(t){
 function loop(t){
   update();
   draw(t);
-  if (recorder && recorder.state === 'recording') drawRecordingFrame(t, false);
+  pushRecordingFrame(t);
   requestAnimationFrame(loop);
 }
 /* ---------- wake lock (keeps the screen on while playing) ---------- */
