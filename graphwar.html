@@ -168,6 +168,12 @@ canvas{display:block;width:100%;height:auto}
           <input type="text" id="mpName" class="mp-input" placeholder="Enter your name" value="Player">
         </div>
         <div style="margin-top:14px">
+          <p class="mh">Match Settings</p>
+          <div class="mrow"><span class="lb">Players</span><select id="mpMaxPlayers"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></div>
+          <div class="mrow"><span class="lb">Soldiers per player</span><select id="mpSoldiers"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+          <div class="mhint">The room host chooses these settings. Every player gets their own team.</div>
+        </div>
+        <div style="margin-top:14px">
           <p class="mh">Layerbase Database (Optional)</p>
           <input type="text" id="mpDbUrl" class="mp-input" placeholder="https://host/v1/databases/UUID/query" style="margin-bottom:6px">
           <input type="password" id="mpDbKey" class="mp-input" placeholder="Database HTTP API key">
@@ -471,14 +477,25 @@ function nextTurn(){
     }
     state = 'aim'; updateUI(); botTurn(); return;
   }
-  turnTeam ^= 1; botBusy = false; shot = null; preview = null;
+  botBusy = false; shot = null; preview = null;
+  const teamCount = teams.length;
+  for (let k = 1; k <= teamCount; k++){
+    const t = (turnTeam + k) % teamCount;
+    if (aliveOf(t).length){ turnTeam = t; break; }
+  }
   const T = teams[turnTeam], n = T.soldiers.length;
   for (let k = 1; k <= n; k++){
     const idx = (T.ptr + k) % n;
     if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; }
   }
   state = 'aim';
-  if (mpState.mode === 'multiplayer'){ inp.value=''; updateUI(); if(canInput()) refreshPreview(); drainRemoteShots(); return; }
+  if (mpState.mode === 'multiplayer'){
+    inp.value=''; updateUI();
+    if (turnTeam === mpState.myTeamIndex && auto) botTurn();
+    else if(canInput()) refreshPreview();
+    drainRemoteShots();
+    return;
+  }
   else if (turnTeam === 1 || auto){ updateUI(); botTurn(); }
   else { inp.value = ''; updateUI(); refreshPreview(); }
 }
@@ -491,9 +508,10 @@ function updateUI(){
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
   let txt = state === 'over' ? 'Game over' : (mpState.mode === 'multiplayer' ?
-    (state === 'waitResult' ? 'Waiting for the host to confirm the result…' : (turnTeam === mpState.myTeamIndex ? 'Your turn' : "Opponent's turn")) :
+    (state === 'waitResult' ? 'Waiting for the host to confirm the result…' : (turnTeam === mpState.myTeamIndex ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Opponent's turn")) :
     (turnTeam === 0 ? (auto ? 'Auto-play: your turn' : 'Your turn') : "Bot's turn"));
-  $('status').textContent = txt + '   |   ' + (mpState.mode === 'multiplayer' ? 'Blue: ' + a0 + '  Red: ' + a1 : 'You: ' + a0 + '  Bots: ' + a1);
+  const mpScore = mpState.mode === 'multiplayer' ? teams.map((T,t) => 'T' + (t+1) + ': ' + aliveOf(t).length).join('  ') : '';
+  $('status').textContent = txt + '   |   ' + (mpState.mode === 'multiplayer' ? mpScore : 'You: ' + a0 + '  Bots: ' + a1);
   inp.readOnly = !canInput(); $('fire').disabled = !canInput(); $('solve').disabled = !canInput();
 }
 
@@ -1041,13 +1059,12 @@ function afterShot(){
     nextTurn(); return;
   }
   const a0 = aliveOf(0).length, a1 = aliveOf(1).length;
-  if (!a0 || !a1){
-    // In multiplayer the host is authoritative about the result.  Both peers
-    // can reach the end of the local animation at slightly different times,
-    // so never let each browser independently decide that it won.
-    if (mpState.mode === 'multiplayer'){
+  if (mpState.mode === 'multiplayer'){
+    const aliveTeams = teams.map((T,t) => aliveOf(t).length > 0 ? t : -1).filter(t => t >= 0);
+    if (aliveTeams.length <= 1){
+      // The host is authoritative. All clients receive the same winning team.
       if (mpState.isHost){
-        const winner = a0 && !a1 ? 0 : (!a0 && a1 ? 1 : -1);
+        const winner = aliveTeams.length === 1 ? aliveTeams[0] : -1;
         broadcastToPlayers({type:'result', winner});
         showMultiplayerResult(winner);
       } else {
@@ -1055,6 +1072,10 @@ function afterShot(){
       }
       return;
     }
+    nextTurn();
+    return;
+  }
+  if (!a0 || !a1){
     state = 'over'; updateUI(); SFX.win();
     $('overtxt').textContent = a0 && !a1 ? 'You win!' : (!a0 && a1 ? 'Bots win!' : 'Draw!');
     $('over').style.display = 'flex';
@@ -1195,13 +1216,13 @@ function botTurn(){
   if (botBusy || state !== 'aim') return;
   botBusy = true; updateUI();
   const gid = gameId, sh = current;
-  setMsg(battle ? sh.name + ' is thinking…' : (sh.team === 1 ? 'Bot is thinking…' : 'Auto-play is thinking…'));
+  setMsg(battle ? sh.name + ' is thinking…' : (mpState.mode === 'multiplayer' ? 'Auto-play is thinking…' : (sh.team === 1 ? 'Bot is thinking…' : 'Auto-play is thinking…')));
   talk(sh, 'think', 0.35);
   setTimeout(() => {
     if (gid !== gameId || current !== sh) return;
     let sol;
     if (battle){ sol = battleSolve(sh); sh.dir = sol.dir; }
-    else sol = sh.team === 0 ? cheatSolve(sh, sh.dir) : botAim(sh, sh.dir, $('diff').value);
+    else sol = (sh.team === 0 || (mpState.mode === 'multiplayer' && sh.team === mpState.myTeamIndex)) ? cheatSolve(sh, sh.dir) : botAim(sh, sh.dir, $('diff').value);
     typeInto(sol.expr, () => setTimeout(() => { if (gid === gameId){ setMsg(battle ? sh.name : ''); fire(); } }, 250 / speed));
   }, 600 / speed);
 }
@@ -1424,7 +1445,13 @@ $('solve').onclick = () => {
     inp.value = cheatSolve(current, 1).expr; refreshPreview();
   }, 30);
 };
-$('auto').onchange = e => { auto = e.target.checked; updateUI(); if (auto){ if (state === 'aim' && turnTeam === 0) botTurn(); else if (state === 'over') startGame(); } };
+$('auto').onchange = e => {
+  auto = e.target.checked; updateUI();
+  if (auto){
+    if (state === 'aim' && (mpState.mode === 'multiplayer' ? turnTeam === mpState.myTeamIndex : turnTeam === 0)) botTurn();
+    else if (state === 'over' && mpState.mode !== 'multiplayer') startGame();
+  }
+};
 $('cheat').oninput = e => { $('clvl').textContent = e.target.value; };
 $('diff').oninput = e => { $('lvl').textContent = e.target.value; };
 $('newg').onclick = startGame; $('again').onclick = () => mpState.mode === 'multiplayer' ? playAgainMultiplayer() : startGame();
@@ -1747,6 +1774,9 @@ let mpState = {
   playerName: 'Player',
   roomCode: null,
   roomPlayers: {},
+  playerTeams: {},
+  maxPlayers: 2,
+  soldiersPerPlayer: 2,
   myTeamIndex: -1,
   ready: false,
   remoteReady: false,
@@ -1778,7 +1808,7 @@ async function leaveMultiplayerRoom(notify=true){
   Object.values(mpState.connections).forEach(conn => { try { conn.close(); } catch(e){} });
   mpState.connections = {};
   mpState.mode = 'singleplayer';
-  mpState.roomCode = null; mpState.myTeamIndex = -1;
+  mpState.roomCode = null; mpState.myTeamIndex = -1; mpState.playerTeams = {};
   mpState.ready = false; mpState.remoteReady = false; mpState.isHost = false; mpState.starting = false;
   mpState.remoteReady = false;
 }
@@ -1824,7 +1854,7 @@ function handleIncomingConnection(conn){
     conn.send({type:'hello', name:mpState.playerName, ready:mpState.ready});
     maybeStartMultiplayer();
   });
-  conn.on('close', () => { delete mpState.connections[conn.peer]; updateLobbyDisplay(); });
+  conn.on('close', () => { delete mpState.connections[conn.peer]; if(mpState.isHost){ delete mpState.playerTeams[conn.peer]; delete mpState.roomPlayers[conn.peer]; sendRoster(); } updateLobbyDisplay(); });
 }
 
 function connectToPeer(peerId){
@@ -1846,16 +1876,54 @@ function broadcastToPlayers(msg){
   });
 }
 
+function sendRoster(){
+  if(!mpState.isHost) return;
+  const players = {};
+  players[mpState.peerId] = 0;
+  Object.keys(mpState.playerTeams).forEach(id => players[id] = mpState.playerTeams[id]);
+  const roster = [{peerId:mpState.peerId, name:mpState.playerName, team:0, ready:mpState.ready}];
+  Object.keys(mpState.playerTeams).forEach(id => { const p=mpState.roomPlayers[id]||{}; roster.push({peerId:id,name:p.name||'Player',team:+mpState.playerTeams[id],ready:!!p.ready}); });
+  broadcastToPlayers({type:'welcome', players, roster, maxPlayers:mpState.maxPlayers, soldiers:mpState.soldiersPerPlayer});
+  updateLobbyDisplay();
+}
+
 function handleMultiplayerMessage(data, fromPeerId){
   if(!data || typeof data.type !== 'string') return;
   if(data.type === 'hello'){
-    mpState.remoteReady = !!data.ready;
+    if(mpState.isHost){
+      const ids = Object.keys(mpState.playerTeams);
+      if(mpState.playerTeams[fromPeerId] == null){
+        if(ids.length + 1 >= mpState.maxPlayers){
+          try { Object.values(mpState.connections).find(c => c.peer === fromPeerId)?.send({type:'room_full'}); } catch(e){}
+          return;
+        }
+        const used = [0, ...ids.map(id => +mpState.playerTeams[id])];
+        let team = 0; while(used.includes(team)) team++;
+        mpState.playerTeams[fromPeerId] = team;
+        mpState.roomPlayers[fromPeerId] = {name:data.name || 'Player', ready:!!data.ready, team};
+      } else mpState.roomPlayers[fromPeerId].ready = !!data.ready;
+      sendRoster();
+    } else {
+      mpState.remoteReady = !!data.ready;
+    }
     updateLobbyDisplay();
     maybeStartMultiplayer();
   } else if(data.type === 'ready'){
-    mpState.remoteReady = !!data.ready;
+    if(mpState.isHost && mpState.roomPlayers[fromPeerId]) mpState.roomPlayers[fromPeerId].ready = !!data.ready;
+    else mpState.remoteReady = !!data.ready;
     updateLobbyDisplay();
     maybeStartMultiplayer();
+  } else if(data.type === 'welcome' && !mpState.isHost){
+    mpState.maxPlayers = Math.max(2, Math.min(4, +(data.maxPlayers || 2)));
+    mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +(data.soldiers || 2)));
+    mpState.playerTeams = data.players || {};
+    if(mpState.peerId && mpState.playerTeams[mpState.peerId] != null) mpState.myTeamIndex = +mpState.playerTeams[mpState.peerId];
+    mpState.roomPlayers = {}; (data.roster || []).forEach(p => mpState.roomPlayers[p.peerId] = p);
+    updateLobbyDisplay();
+  } else if(data.type === 'room_full'){
+    setMpStatus('Room is full.', true);
+    leaveMultiplayerRoom(false);
+    show('mMultiplayerSet');
   } else if(data.type === 'start' && !mpState.isHost){
     applyMultiplayerStart(data);
   } else if(data.type === 'shot'){
@@ -1887,15 +1955,33 @@ function showMultiplayerResult(winner){
 
 function startMultiplayerGame(seed, n0, n1, myTeam){
   gameId++; botBusy = false; shot = null; expl = []; preview = null;
-  auto = false; battle = false; videoMode = false;
+  battle = false; videoMode = false;
+  auto = !!$('auto').checked;
   mpState.mode = 'multiplayer'; mpState.myTeamIndex = myTeam; mpState.seed = seed;
   mpTurnNo = 0; mpPendingShots = [];
-  // Both clients must animate at the same pace, otherwise turns overlap.
-  speed = 1; $('speed').value = 1; $('spd').textContent = '1';
+  // Both clients use the same animation speed so turn timing stays deterministic.
+  speed = Math.max(1, Math.min(3, +(mpState.matchSpeed || 1))); $('speed').value = speed; $('spd').textContent = speed;
   $('mode').value = 'multiplayer';
-  $('n0').value = String(n0); $('n1').value = String(n1);
+  $('n0').value = String(n1); $('n1').value = String(n1);
   $('menu').classList.add('hide'); $('over').style.display = 'none';
-  withSeed(seed, () => startGame());
+  withSeed(seed, () => {
+    // Multiplayer uses one team per connected player instead of the classic 2-team layout.
+    gameId++; botBusy = false; shot = null; expl = []; preview = null;
+    const count = Math.max(2, Math.min(4, +n0 || 2));
+    const soldiers = Math.max(1, Math.min(5, +n1 || 2));
+    teams = Array.from({length:count}, (_, i) => ({dir: i % 2 === 0 ? 1 : -1, soldiers:[], ptr:-1}));
+    tctx.clearRect(0, 0, CW, CH); tctx.fillStyle = '#000';
+    const no = 9 + Math.floor(Math.random()*5);
+    for (let i = 0; i < no; i++){
+      const big = Math.random() < 0.2, r = (big ? 3.5 : 0.9) + Math.random() * (big ? 3 : 2.2);
+      tctx.beginPath(); tctx.arc(X(-25 + Math.random()*50), Y(-15 + Math.random()*30), r*PXU, 0, 7); tctx.fill();
+    }
+    refreshTerrain();
+    const slot = 46 / count;
+    for(let t=0;t<count;t++) for(let k=0;k<soldiers;k++) placeSoldier(t, -23 + slot*t, -23 + slot*(t+1), k, soldiers);
+    refreshTerrain();
+    turnTeam = count - 1; inp.value=''; nextTurn();
+  });
 }
 
 function startMultiplayerHost(){
@@ -1904,15 +1990,23 @@ function startMultiplayerHost(){
   if(mpState.mode !== 'lobby' && !(mpState.mode === 'multiplayer' && (state === 'over' || state === 'waitResult'))) return;
   mpState.starting = true;
   const seed = (realRandom() * 0xFFFFFFFF) >>> 0;
-  const n0 = +$('n0').value || 3, n1 = +$('n1').value || 3;
-  broadcastToPlayers({type:'start', seed: seed, n0: n0, n1: n1});
-  startMultiplayerGame(seed, n0, n1, 0);
+  const count = Math.max(2, Math.min(4, +mpState.maxPlayers || 2));
+  const soldiers = Math.max(1, Math.min(5, +mpState.soldiersPerPlayer || 2));
+  const matchSpeed = Math.max(1, Math.min(3, +mpState.matchSpeed || 1));
+  mpState.maxPlayers = count; mpState.soldiersPerPlayer = soldiers; mpState.matchSpeed = matchSpeed;
+  const playerCount = Math.min(count, Object.keys(mpState.playerTeams).length + 1);
+  broadcastToPlayers({type:'start', seed: seed, playerCount: playerCount, soldiers: soldiers, speed: matchSpeed, players: mpState.playerTeams});
+  startMultiplayerGame(seed, playerCount, soldiers, mpState.myTeamIndex < 0 ? 0 : mpState.myTeamIndex);
   mpState.starting = false;
 }
 
 function applyMultiplayerStart(data){
   if(typeof data.seed !== 'number'){ setMpStatus('Could not start: no shared map seed received.', true); return; }
-  startMultiplayerGame(data.seed, data.n0 || 3, data.n1 || 3, 1);
+  if(data.players && mpState.peerId && data.players[mpState.peerId] != null) mpState.myTeamIndex = +data.players[mpState.peerId];
+  mpState.maxPlayers = Math.max(2, Math.min(4, +(data.playerCount || 2)));
+  mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +(data.soldiers || 2)));
+  mpState.matchSpeed = Math.max(1, Math.min(3, +(data.speed || 1)));
+  startMultiplayerGame(data.seed, mpState.maxPlayers, mpState.soldiersPerPlayer, mpState.myTeamIndex < 0 ? 1 : mpState.myTeamIndex);
 }
 
 // A shot only makes sense on the turn it was fired on, and only once the local
@@ -1940,7 +2034,10 @@ function drainRemoteShots(){
 
 function maybeStartMultiplayer(){
   if(!mpState.isHost || mpState.starting || mpState.mode === 'multiplayer') return;
-  if(mpState.ready && mpState.remoteReady && Object.keys(mpState.connections).length) startMultiplayerHost();
+  const connected = Object.values(mpState.connections).filter(c => c.open).length;
+  const players = connected + 1;
+  const everyoneReady = mpState.ready && Object.keys(mpState.roomPlayers).every(id => mpState.roomPlayers[id].ready);
+  if(players >= 2 && everyoneReady) startMultiplayerHost();
 }
 
 /* ---------- Layerbase HTTP query API ----------
@@ -2121,25 +2218,27 @@ async function findRoomByCode(code){
 
 function updateLobbyDisplay(){
   const playersDiv = $('mpPlayers');
-  playersDiv.innerHTML = '<b>Players:</b><br>';
-  playersDiv.innerHTML += '<div class="mp-player">🔵 ' + mpState.playerName + ' (You)</div>';
   const liveConnections = Object.values(mpState.connections).filter(conn => conn.open);
-  if(liveConnections.length > 0){
-    playersDiv.innerHTML += '<div class="mp-player">🟢 Opponent connected</div>';
+  const rows = [{name:mpState.playerName, team:0, ready:mpState.ready, you:true}];
+  if(mpState.isHost){
+    Object.keys(mpState.playerTeams).forEach(id => { const p=mpState.roomPlayers[id]||{}; rows.push({name:p.name||'Player',team:+mpState.playerTeams[id],ready:!!p.ready,you:false}); });
   } else {
-    playersDiv.innerHTML += '<div class="mp-player" style="opacity:0.5">⚫ Waiting for opponent...</div>';
+    Object.values(mpState.roomPlayers).filter(p => p.peerId !== mpState.peerId).forEach(p => rows.push(p));
+    if(!rows.some(r=>r.team===0 && !r.you)) rows.push({name:'Host',team:0,ready:mpState.remoteReady,you:false});
   }
+  rows.sort((a,b)=>(a.team||0)-(b.team||0));
+  playersDiv.innerHTML = '<b>Players (' + rows.length + '/' + (mpState.maxPlayers||2) + '):</b><br>' + rows.map(p =>
+    '<div class="mp-player">' + (p.you ? '🔵 ' : '🟢 ') + (p.name || 'Player') + ' · Team ' + ((+p.team||0)+1) + (p.you?' (You)':'') + (p.ready?' ✓':'') + '</div>'
+  ).join('');
+  if(rows.length < (mpState.maxPlayers||2)) playersDiv.innerHTML += '<div class="mp-player" style="opacity:.5">⚫ Waiting for more players...</div>';
   const readyBtn = $('mMpReady');
   readyBtn.disabled = liveConnections.length === 0;
-  if(mpState.ready && mpState.remoteReady){
-    $('mpLobbyStatus').textContent = '✓ Both ready! Game starting...';
+  if(mpState.ready){
     readyBtn.textContent = 'Ready ✓';
-  } else if(mpState.ready){
-    readyBtn.textContent = 'Ready ✓';
-    $('mpLobbyStatus').textContent = 'Waiting for opponent to ready...';
+    $('mpLobbyStatus').textContent = rows.length >= 2 ? 'Waiting for all players to ready...' : 'Waiting for players...';
   } else {
     readyBtn.textContent = 'Ready Up';
-    $('mpLobbyStatus').textContent = 'Click Ready when you\'re ready to play';
+    $('mpLobbyStatus').textContent = rows.length >= 2 ? "Click Ready when you're ready to play" : 'Waiting for more players...';
   }
 }
 
@@ -2232,6 +2331,10 @@ async function displayRoomList(){
     }
     mpState.roomCode = Math.random().toString(36).slice(2,8).toUpperCase();
     mpState.isHost = true; mpState.mode = 'lobby'; mpState.myTeamIndex = 0;
+    mpState.maxPlayers = Math.max(2, Math.min(4, +$('mpMaxPlayers').value || 2));
+    mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +$('mpSoldiers').value || 2));
+    mpState.matchSpeed = 1;
+    mpState.playerTeams = {}; mpState.roomPlayers = {};
     mpState.ready = false; mpState.remoteReady = false;
     $('mpRoomCode').textContent = mpState.roomCode;
     await createRoom();
@@ -2254,7 +2357,7 @@ async function displayRoomList(){
       return;
     }
     mpState.roomCode = code;
-    mpState.isHost = false; mpState.mode = 'lobby'; mpState.myTeamIndex = 1;
+    mpState.isHost = false; mpState.mode = 'lobby'; mpState.myTeamIndex = -1;
     mpState.ready = false; mpState.remoteReady = false;
     $('mpRoomCode').textContent = mpState.roomCode;
     connectToPeer(room.peerId);
@@ -2264,7 +2367,7 @@ async function displayRoomList(){
   $('mMpReady').onclick = () => {
     mpState.ready = !mpState.ready;
     updateLobbyDisplay();
-    broadcastToPlayers({type:'ready', ready:mpState.ready});
+    broadcastToPlayers({type:'ready', ready:mpState.ready, name:mpState.playerName});
     maybeStartMultiplayer();
   };
   
