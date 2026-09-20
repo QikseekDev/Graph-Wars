@@ -278,7 +278,6 @@ let recordCanvas = null, recordCtx = null, videoOrientation = 'landscape';
 let recordStream = null, recordTrack = null, recordMime = '';
 let recordingCard = null, battleNumber = 0, cameraShotCount = 0;
 let lastRecordingDraw = 0;
-let recordFrameTimer = null;
 let seriesTotal = 1, seriesRound = 1, seriesKinds = [], seriesPer = 1, seriesWins = {};
 const camera = {x:CW/2, y:CH/2, zoom:1, tx:CW/2, ty:CH/2, tz:1};
 const inp = $('inp');
@@ -397,7 +396,6 @@ function simulate(f, sh, dir){
 function recordingSupported(){ return !!(cv.captureStream && window.MediaRecorder); }
 function resetVideoExport(){
   if (finishRecordingTimer){ clearTimeout(finishRecordingTimer); finishRecordingTimer = null; }
-  if (recordFrameTimer){ clearInterval(recordFrameTimer); recordFrameTimer = null; }
   if (recorder && recorder.state !== 'inactive'){ try { recorder.stop(); } catch(e){} }
   recorder = null; recordedChunks = [];
   if (recordTrack){ try { recordTrack.stop(); } catch(e){} }
@@ -417,22 +415,11 @@ function startVideoRecording(){
   recordCtx = recordCanvas.getContext('2d', {alpha:false, desynchronized:true});
   lastRecordingDraw = 0;
   drawRecordingFrame(performance.now(), true);
-  // A fixed 30fps capture: the browser stamps every frame on a steady clock, so
-  // players read the real length of the file instead of a few seconds.
-  // Manual frame pacing: captureStream(0) only emits a frame when we ask for one,
-  // so we push exactly 30 frames per second of real time even if the game loop
-  // stutters. Auto-capture dropped frames on slow ticks, which made the finished
-  // file run short on picture while the audio kept real time - that is what made
-  // the typing and shooting sounds arrive before the matching visuals.
-  recordStream = recordCanvas.captureStream(0);
+  // Let the browser timestamp both tracks from the same real-time media clock.
+  // Each source frame is copied immediately after the game renders below; the
+  // 30fps limit only caps duplicate frames and never invents video timestamps.
+  recordStream = recordCanvas.captureStream(30);
   recordTrack = recordStream.getVideoTracks()[0];
-  if (recordFrameTimer){ clearInterval(recordFrameTimer); recordFrameTimer = null; }
-  recordFrameTimer = setInterval(() => {
-    if (!recorder || recorder.state !== 'recording' || !recordTrack) return;
-    drawRecordingFrame(performance.now(), true);
-    if (recordTrack.requestFrame) recordTrack.requestFrame();
-    else if (recordStream.requestFrame) recordStream.requestFrame();
-  }, 1000/30);
   const audio = SFX.stream && SFX.stream();
   if (audio) for (const track of audio.getAudioTracks()) recordStream.addTrack(track);
   // MP4 first so the file plays anywhere; WebM only as a fallback.
@@ -443,7 +430,6 @@ function startVideoRecording(){
     recordMime = recorder.mimeType || mimeType || 'video/webm';
     recorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
     recorder.onstop = () => {
-      if (recordFrameTimer){ clearInterval(recordFrameTimer); recordFrameTimer = null; }
       if (!recordedChunks.length) return;
       const mime = recorder.mimeType || recordMime;
       const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
@@ -1161,7 +1147,12 @@ function draw(t){
   }
   ctx.restore();
 }
-function loop(t){ update(); draw(t); requestAnimationFrame(loop); }
+function loop(t){
+  update();
+  draw(t);
+  if (recorder && recorder.state === 'recording') drawRecordingFrame(t, false);
+  requestAnimationFrame(loop);
+}
 /* ---------- wake lock (keeps the screen on while playing) ---------- */
 let wakeLock = null;
 async function getWakeLock(){
