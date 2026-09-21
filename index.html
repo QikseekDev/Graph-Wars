@@ -32,7 +32,8 @@ button:disabled{opacity:.45}
 #msg.err{color:#ff8a80}
 .stage{position:relative;border:1px solid #000;overflow:hidden;background:#fff}
 canvas{display:block;width:100%;height:auto}
-#over{color:#fff;display:none;position:absolute;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;flex-direction:column;gap:14px;font-size:2rem;font-weight:bold}
+#over{color:#fff;display:none;position:absolute;inset:0;background:rgba(0,0,0,.68);align-items:center;justify-content:center;flex-direction:column;gap:14px;font-size:clamp(1.15rem,4vw,2rem);font-weight:bold;text-align:center;padding:22px;line-height:1.15}
+#overtxt{max-width:min(90%,720px);overflow-wrap:anywhere}
 .fx{display:flex;gap:8px;margin:8px 0;align-items:center}
 .fx span{font-size:1.7rem;font-weight:bold;white-space:nowrap;color:#f39a1f;text-shadow:-1px -1px 0 #333,1px -1px 0 #333,-1px 1px 0 #333,1px 1px 0 #333}
 #inp{flex:1;min-width:0;background:#fff;border:1px solid #6b7f68;border-radius:2px;padding:10px;font-size:1.1rem;font-family:ui-monospace,Menlo,Consolas,monospace}
@@ -406,15 +407,15 @@ function compile(str){
 let roundPending = false; // true between round setup and the first turn (intro card showing)
 let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [], preview = null;
 let auto = false, gameId = 0, botBusy = false;
-let battle = false, speed = 1, stall = 0, feedList = [];
+let battle = false, speed = 1, stall = 0, feedList = [], portraitLogList = [];
 let videoMode = false, directorMode = true, highlightCards = true, voiceOver = false, recorder = null, recordedChunks = [], videoUrl = null, finishRecordingTimer = null;
-let recordCanvas = null, recordCtx = null, videoOrientation = 'landscape';
+let recordCanvas = null, recordCtx = null, recordOutputCtx = null, recordFrameCanvas = null, recordSceneCanvas = null, recordSceneCtx = null, videoOrientation = 'landscape';
 let recordStream = null, recordTrack = null, recordMime = '';
 let recordingMode = null, mbOutput = null, mbVideoSource = null, mbAudioSource = null, mbRecordStart = 0;
 let mbAudioMode = null, mbLastTs = 0, mbDriver = null, recSession = 0, exporting = false, mbVCodec = '', mbACodec = '', mbNextEmit = 0;
 const avoidCodecs = new Set();   // 'codec@WxH' combos whose encoder failed on this device
 const AUDIO_SYNC_MS = 0; // nudge exported sound: positive = later, negative = earlier
-let recordingCard = null, battleNumber = 0, cameraShotCount = 0;
+let recordingCard = null, battleNumber = 0, cameraShotCount = 0, graphToneDue = 0;
 let lastFired = null, lastSay = null; // feed the portrait video's text panel
 let nextFrameDue = 0, recordFps = 30, recordLW = 960, recordLH = 540, recordKX = 1, recordKY = 1;
 let seriesTotal = 1, seriesRound = 1, seriesKinds = [], seriesPer = 1, seriesWins = {};
@@ -430,7 +431,8 @@ function clearSpot(x, y, r){
   for (let a = 0; a < 8; a++) if (solid(x + Math.cos(a*Math.PI/4)*r, y + Math.sin(a*Math.PI/4)*r)) return false;
   return true;
 }
-function placeSoldier(t, lo, hi, idx, total){
+function placeSoldier(t, lo, hi, idx, total, minSep){
+  minSep = minSep || 3.5;
   const all = teams.flatMap(t => t.soldiers);
   // Better spacing: divide the range into even slots per soldier index so bots
   // don't cluster; fall back to the full range if a slot has no clear spot.
@@ -443,7 +445,7 @@ function placeSoldier(t, lo, hi, idx, total){
     const rlo = useSlot ? slotLo + pad : lo, rhi = useSlot ? slotHi - pad : hi;
     const x = rlo + Math.random()*(rhi-rlo), y = -13 + Math.random()*26;
     if (!clearSpot(x, y, 1.8)) continue;
-    if (all.some(s => Math.hypot(s.x-x, s.y-y) < 3.5)) continue;
+    if (all.some(s => Math.hypot(s.x-x, s.y-y) < minSep)) continue;
     teams[t].soldiers.push({x, y, team:t, alive:true, dir:teams[t].dir}); return;
   }
   const x = lo + Math.random()*(hi-lo), y = -10 + Math.random()*20;
@@ -497,6 +499,7 @@ function nextTurn(){
     if (T.soldiers[idx].alive){ T.ptr = idx; current = T.soldiers[idx]; break; }
   }
   state = 'aim';
+  SFX.turn();
   if (mpState.mode === 'multiplayer'){
     inp.value=''; updateUI();
     if (turnTeam === mpState.myTeamIndex && auto) botTurn();
@@ -597,7 +600,7 @@ function resetVideoExport(){
   if (mbOutput && mbOutput.state !== 'finalized' && mbOutput.state !== 'canceled'){ try { mbOutput.cancel(); } catch(e){} }
   mbOutput = null; mbVideoSource = null; mbAudioSource = null; recordingMode = null; mbAudioMode = null; mbDriver = null; mbLastTs = 0; mbVCodec = '';
   VT.stop(); SFX.endLog();
-  recordCanvas = null; recordCtx = null; nextFrameDue = 0; setRenderScale(1);
+  recordCanvas = null; recordCtx = null; recordOutputCtx = null; recordFrameCanvas = null; recordSceneCanvas = null; recordSceneCtx = null; nextFrameDue = 0; setRenderScale(1);
   SFX.closeTap();
   if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
   const ev = $('exportVideo'); ev.classList.remove('show', 'busy'); ev.removeAttribute('href'); $('recBadge').classList.remove('on');
@@ -625,9 +628,21 @@ function setupRecordCanvas(){
   recordKX = recordCanvas.width / recordLW; recordKY = recordCanvas.height / recordLH;
   // The recording canvas is already at output resolution; keep the game canvas logical-size to avoid a second expensive high-res render.
   setRenderScale(1);
-  recordCtx = recordCanvas.getContext('2d', {alpha:false, desynchronized:true});
+  // Keep the export canvas double-buffered. `desynchronized:true` is great for
+  // live drawing latency, but canvases used as video sources can occasionally
+  // expose a partially-presented frame, which shows up as a one-frame portrait
+  // glitch in the exported clip. Compose offscreen first, then copy the finished
+  // frame to the canvas used by the recorder in one operation.
+  recordOutputCtx = recordCanvas.getContext('2d', {alpha:false});
+  recordFrameCanvas = document.createElement('canvas');
+  recordFrameCanvas.width = recordLW; recordFrameCanvas.height = recordLH;
+  recordCtx = recordFrameCanvas.getContext('2d', {alpha:false});
+  recordSceneCanvas = document.createElement('canvas');
+  recordSceneCanvas.width = CW; recordSceneCanvas.height = CH;
+  recordSceneCtx = recordSceneCanvas.getContext('2d', {alpha:false});
   pvFresh = true;
   nextFrameDue = 0;
+  if (teams) draw(performance.now());
   composeRecordingFrame(performance.now());
 }
 async function startVideoRecording(){
@@ -749,7 +764,7 @@ function startVideoRecordingLegacy(){
       const mime = rec.mimeType || recordMime;
       exportReady(URL.createObjectURL(new Blob(chunks, {type: mime})), mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm');
     };
-    rec.start(); recordingMode = 'legacy'; $('recBadge').textContent = 'REC (basic recorder)'; $('recBadge').classList.add('on');
+    rec.start(); recordingMode = 'legacy'; mbRecordStart = performance.now(); $('recBadge').textContent = 'REC (basic recorder)'; $('recBadge').classList.add('on');
   } catch(e){ recorder = null; SFX.closeTap(); setMsg('This browser could not start video recording.', true); }
 }
 // Called once per real animation frame from loop(). Redraws the export canvas
@@ -778,22 +793,46 @@ const PV_SANS = '"DejaVu Sans",Verdana,sans-serif', PV_MONO = 'ui-monospace,Menl
 const PV_BOLD = '"Arial Black","Helvetica Neue",Arial,"DejaVu Sans",sans-serif';
 function rrect(c, x, y, w, h, r){ c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); }
 function wrapCanvasText(c, text, maxW){
-  const words = String(text).split(/\s+/).filter(Boolean), lines = []; let cur = '';
-  for (const w of words){
+  const words = String(text).replace(/\s+/g, ' ').trim().split(' ').filter(Boolean), lines = []; let cur = '';
+  const pushWord = word => {
+    let part = '';
+    for (const ch of word){
+      if (part && c.measureText(part + ch).width > maxW){ lines.push(part); part = ch; }
+      else part += ch;
+    }
+    return part;
+  };
+  for (let w of words){
+    if (c.measureText(w).width > maxW){
+      if (cur){ lines.push(cur); cur = ''; }
+      cur = pushWord(w);
+      continue;
+    }
     const t = cur ? cur + ' ' + w : w;
     if (cur && c.measureText(t).width > maxW){ lines.push(cur); cur = w; } else cur = t;
   }
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
+function fitCanvasLine(c, text, maxW){
+  const src = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!src || c.measureText(src).width <= maxW) return src;
+  let lo = 0, hi = src.length;
+  while (lo < hi){
+    const mid = Math.ceil((lo + hi) / 2);
+    if (c.measureText(src.slice(0, mid) + '…').width <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return src.slice(0, Math.max(0, lo)).replace(/\s+$/,'') + '…';
+}
 let pvSmall = null, pvMid = null, pvFresh = true, pvErrShown = false;
-function pvBackdrop(c, rw, rh){
+function pvBackdrop(c, rw, rh, src){
   if (!pvSmall){ pvSmall = document.createElement('canvas'); pvSmall.width = 27; pvSmall.height = 48; pvMid = document.createElement('canvas'); pvMid.width = 108; pvMid.height = 192; }
   const s = pvSmall.getContext('2d'), sc = Math.max(27 / CW, 48 / CH), dw = CW * sc, dh = CH * sc;
   // Accumulate slowly instead of redrawing each frame, so the blurred backdrop drifts calmly
   // and doesn't swim/flicker when the camera pans, zooms or things explode.
   s.imageSmoothingEnabled = true; s.globalAlpha = pvFresh ? 1 : 0.035; pvFresh = false;
-  s.drawImage(cv, (27 - dw) / 2, (48 - dh) / 2, dw, dh); s.globalAlpha = 1;
+  s.drawImage(src || cv, (27 - dw) / 2, (48 - dh) / 2, dw, dh); s.globalAlpha = 1;
   const m2 = pvMid.getContext('2d'); m2.imageSmoothingEnabled = true; m2.drawImage(pvSmall, 0, 0, 108, 192);
   c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high'; c.drawImage(pvMid, 0, 0, rw, rh);
   c.fillStyle = 'rgba(12,22,14,.66)'; c.fillRect(0, 0, rw, rh);
@@ -809,8 +848,9 @@ function pvCaption(c, text, cx, y, size, maxW, alpha){
 }
 function composePortraitScene(t){
   const c = recordCtx, rw = recordLW, rh = recordLH, m = 30, iw = rw - m * 2;
+  const src = recordSceneCanvas || cv;
   c.save();
-  pvBackdrop(c, rw, rh);
+  pvBackdrop(c, rw, rh, src);
   c.textBaseline = 'alphabetic'; c.textAlign = 'left';
   const total = teams.reduce((a, T) => a + T.soldiers.length, 0), alive = allAlive().length;
   const aliveTeams = teams.filter((T, i) => aliveOf(i).length).length;
@@ -831,7 +871,7 @@ function composePortraitScene(t){
   // battlefield, full width
   const bfY = 196, bfH = Math.round(rw * CH / CW);
   c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
-  c.drawImage(cv, 0, bfY, rw, bfH);
+  c.drawImage(src, 0, bfY, rw, bfH);
   // cinematic grade: soft vignette + slight warm/contrast tint, clipped to the battlefield
   c.save(); c.beginPath(); c.rect(0, bfY, rw, bfH); c.clip();
   const vg = c.createRadialGradient(rw / 2, bfY + bfH / 2, bfH * .45, rw / 2, bfY + bfH / 2, rw * .78);
@@ -857,69 +897,37 @@ function composePortraitScene(t){
   const eqTop = bfY + bfH + 40 + 16, eqMaxBottom = top - 16;
   const maxEh = Math.max(110, Math.min(300, eqMaxBottom - eqTop));
 
-  // who is shooting + their equation
+  // current bot + rolling battle chat/logs (the equation is already visible inside the battlefield)
   let y = bfY + bfH + 40;
   const typing = !!(cur && cur.typing != null);
   const col = (cur && cur.color) || '#5b8fd6';
   c.textAlign = 'left';
   c.fillStyle = col; c.beginPath(); c.arc(m + 11, y - 10, 11, 0, 7); c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 2.5; c.stroke();
-  c.fillStyle = '#fff'; c.font = '700 32px ' + PV_SANS; c.fillText(cur ? nm(cur) : 'Get ready…', m + 32, y, iw - 230);
+  c.fillStyle = '#fff'; c.font = '700 32px ' + PV_SANS; c.fillText(cur ? nm(cur) : 'Bots ready', m + 32, y, iw - 230);
   const status = !cur || isOver ? '' : typing ? 'typing…' : state === 'aim' ? 'thinking…' : state === 'anim' ? 'fired' : '';
   c.textAlign = 'right'; c.fillStyle = '#c5d6c0'; c.font = '400 26px ' + PV_SANS; c.fillText(status, rw - m, y - 2); c.textAlign = 'left';
-  y += 16;
-  let txt = null;
-  if (typing) txt = cur.typing; else if (lastFired && lastFired.who === cur) txt = lastFired.text;
-  let eh = Math.min(140, maxEh), eqLines = null, eqFs = 15;
-  const pad = 18, innerW = iw - pad * 2, LH = 1.25;
-  if (txt !== null){
-    const full = 'y = ' + txt + (typing ? '|' : ''), sizes = [34, 30, 27, 24, 22, 20, 18, 17, 16, 15, 14], maxInner = maxEh - pad * 2 + 6;
-    let fitted = false;
-    for (const sz of sizes){
-      c.font = '600 ' + sz + 'px ' + PV_MONO;
-      const cw = c.measureText('M').width, ls = wrapFn(full, Math.max(8, Math.floor(innerW / cw)));
-      eqFs = sz; eqLines = ls;
-      if (ls.length * sz * LH <= maxInner){ fitted = true; break; }
-    }
-    if (!fitted){
-      // Still too long at the smallest size: keep what fits and mark the cut with an ellipsis.
-      // While typing show the newest end so the cursor stays visible; otherwise show the start.
-      const maxL = Math.max(1, Math.floor(maxInner / (eqFs * LH)));
-      if (typing) eqLines = ['…' + eqLines[eqLines.length - maxL].slice(1)].concat(eqLines.slice(-maxL + 1));
-      else { eqLines = eqLines.slice(0, maxL); eqLines[maxL - 1] = eqLines[maxL - 1].replace(/.{0,2}$/, '') + '…'; }
-    }
-    eh = Math.max(Math.min(140, maxEh), Math.min(maxEh, Math.ceil(eqLines.length * eqFs * LH + pad * 2 - 6)));
-  }
-  rrect(c, m, y, iw, eh, 14); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill();
-  if (txt === null){
-    c.fillStyle = '#9fb59a'; c.font = 'italic 400 28px ' + PV_SANS; c.textAlign = 'center';
-    c.fillText(isOver ? 'Battle over' : '…', rw / 2, y + eh / 2 + 9); c.textAlign = 'left';
-  } else {
-    c.font = '600 ' + eqFs + 'px ' + PV_MONO; c.fillStyle = '#f4f4ee';
-    const blink = Math.floor(t / 400) % 2 === 0;
-    const textH = eqLines.length * eqFs * LH, y0 = y + (eh - textH) / 2 + eqFs * 0.95;
-    eqLines.forEach((ln, i) => {
-      if (typing && i === eqLines.length - 1) ln = ln.slice(0, -1) + (blink ? '|' : '');
-      c.fillText(ln, m + pad, y0 + i * eqFs * LH, innerW);
-    });
-  }
+  y += 24;
+  const pad = 18, innerW = iw - pad * 2;
+  const logTop = y, logBottom = top - 18;
+  const eh = Math.max(130, Math.min(300, logBottom - logTop));
+  rrect(c, m, logTop, iw, eh, 14); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill();
+  c.fillStyle = '#9fb59a'; c.font = '700 18px ' + PV_SANS; c.fillText('LIVE CHAT', m + pad, logTop + 27, innerW);
+  const logs = portraitLogList.length ? portraitLogList.slice(0, 5).reverse() : [{text:'Round ' + seriesRound + ' begins', color:'#f7a21b', sys:true}];
+  const fs = logs.length >= 5 ? 20 : 22, lineH = logs.length >= 5 ? 27 : 31;
+  let logY = logTop + 60;
+  logs.forEach((entry, idx) => {
+    const newest = idx === logs.length - 1;
+    if (newest){ rrect(c, m + 10, logY - fs - 5, iw - 20, lineH + 4, 8); c.fillStyle = 'rgba(255,255,255,.09)'; c.fill(); }
+    c.font = (entry.sys ? '800 ' : '700 ') + fs + 'px ' + PV_SANS;
+    c.fillStyle = entry.color || (entry.sys ? '#f7a21b' : '#e8f5e9');
+    const prefix = entry.sys ? '⚔ ' : '• ';
+    c.fillText(fitCanvasLine(c, prefix + entry.text, innerW), m + pad, logY, innerW);
+    logY += lineH;
+  });
   y += eh;
 
-  // captions: latest chatter, else the latest elimination (burned in over the bottom of the battlefield)
-  const say = lastSay && t - lastSay.at < 3600 ? lastSay : null, capY = capBase - 50;
-  if (say){
-    const age = t - say.at, alpha = age > 3200 ? Math.max(0, 1 - (age - 3200) / 400) : Math.min(1, age / 120);
-    c.save(); c.globalAlpha = alpha; c.textAlign = 'center'; c.lineJoin = 'round';
-    c.font = '700 26px ' + PV_SANS; c.strokeStyle = '#000'; c.lineWidth = 6; c.strokeText(nm(say.who), rw / 2, capY - 34);
-    c.fillStyle = say.who.color && say.who.color !== '#37474f' ? say.who.color : '#cfd8dc'; c.fillText(nm(say.who), rw / 2, capY - 34);
-    c.restore();
-    c.font = '900 40px ' + PV_BOLD;
-    const lines = wrapCanvasText(c, '“' + say.text + '”', iw - 20).slice(0, 2);
-    // one line sits low (closer to the scoreboard), two lines stack upward
-    const baseY = capY + 10 + 50 - (lines.length - 1) * 0 ;
-    lines.forEach((l, i) => pvCaption(c, l, rw / 2, baseY - (lines.length - 1 - i) * 50, 40, iw - 20, alpha));
-  } else if (feedList.length){
-    pvCaption(c, feedList[0], rw / 2, capY + 60, 34, iw - 20, 0.9);
-  }
+  // Burned-in chatter captions were removed on purpose: the LIVE CHAT panel below the
+  // battlefield is now the only chat surface in portrait, so nothing covers the game.
 
   // scoreboard (compact multi-column grid when there are lots of teams)
   rrect(c, m, top, iw, ph, 16); c.fillStyle = 'rgba(0,0,0,.5)'; c.fill();
@@ -947,9 +955,20 @@ function composePortraitScene(t){
   c.restore();
 }
 function composeRecordingFrame(t){
-  if (!recordCtx || !recordCanvas) return;
+  if (!recordCtx || !recordCanvas || !recordOutputCtx) return;
   const rw = recordLW, rh = recordLH;
-  recordCtx.setTransform(recordKX, 0, 0, recordKY, 0, 0);
+  if (recordSceneCtx && recordSceneCanvas){
+    recordSceneCtx.setTransform(1, 0, 0, 1, 0, 0);
+    recordSceneCtx.globalAlpha = 1;
+    recordSceneCtx.globalCompositeOperation = 'source-over';
+    recordSceneCtx.filter = 'none';
+    recordSceneCtx.clearRect(0, 0, CW, CH);
+    recordSceneCtx.drawImage(cv, 0, 0, CW, CH);
+  }
+  recordCtx.setTransform(1, 0, 0, 1, 0, 0);
+  recordCtx.globalAlpha = 1;
+  recordCtx.globalCompositeOperation = 'source-over';
+  recordCtx.filter = 'none';
   if (rh > rw && teams){
     try { composePortraitScene(t); pvErrShown = false; }
     catch (err){
@@ -958,15 +977,15 @@ function composeRecordingFrame(t){
       console.error('portrait compose failed', err);
       if (!pvErrShown){ pvErrShown = true; try { setMsg('Video layout error: ' + ((err && err.message) || err), true); } catch(e2){} }
       if (recordCtx.reset) recordCtx.reset(); else { try { for (let i = 0; i < 20; i++) recordCtx.restore(); } catch(e3){} }
-      recordCtx.setTransform(recordKX, 0, 0, recordKY, 0, 0);
+      recordCtx.setTransform(1, 0, 0, 1, 0, 0);
       recordCtx.fillStyle = '#0c160e'; recordCtx.fillRect(0, 0, rw, rh);
       const bh = Math.round(rw * CH / CW);
-      recordCtx.drawImage(cv, 0, Math.round((rh - bh) / 2), rw, bh);
+      recordCtx.drawImage(recordSceneCanvas || cv, 0, Math.round((rh - bh) / 2), rw, bh);
     }
   } else {
     recordCtx.fillStyle = '#fff'; recordCtx.fillRect(0, 0, rw, rh);
     const scale = Math.max(rw / CW, rh / CH), dw = CW * scale, dh = CH * scale;
-    recordCtx.drawImage(cv, (rw - dw) / 2, (rh - dh) / 2, dw, dh);
+    recordCtx.drawImage(recordSceneCanvas || cv, (rw - dw) / 2, (rh - dh) / 2, dw, dh);
   }
   if (recordingCard){
     // Plain hand-made title card: flat colour, plain left-aligned text, nothing
@@ -982,26 +1001,48 @@ function composeRecordingFrame(t){
     recordCtx.save(); recordCtx.globalAlpha = fade;
     recordCtx.fillStyle = '#1e3a1c'; recordCtx.fillRect(0,0,rw,rh);
     recordCtx.globalAlpha = textA;
-    const safe = rw*.1, top = rh*.3, maxW = rw - safe*2; let cy = top;
+    const safe = Math.max(36, rw*.085), maxW = rw - safe*2, maxH = rh - safe*2;
     recordCtx.textAlign='left'; recordCtx.textBaseline='alphabetic';
-    // Draws one wrapped block; `adv` is the gap from its last baseline to the next block.
-    const block = (txt, size, weight, color, adv) => {
-      recordCtx.font = weight+' '+Math.round(size)+'px "DejaVu Sans",Verdana,sans-serif'; recordCtx.fillStyle = color;
-      const lines = wrapCanvasText(recordCtx, txt, maxW);
-      lines.forEach((l, k) => recordCtx.fillText(l, safe, cy + k*size*1.2, maxW));
-      cy += (lines.length-1)*size*1.2 + adv;
-    };
-    block(recordingCard.eyebrow || 'Graphwar', unit*.032, '700', '#cfe3c9', unit*.11);
-    block(recordingCard.title, unit*.075, '700', '#ffffff', unit*.075);
-    if (recordingCard.subtitle) block(recordingCard.subtitle, unit*.04, '400', '#e8c98a', unit*.06);
-    if (recordingCard.detail) block(recordingCard.detail, unit*.03, '400', '#a9c7a2', 0);
+    const rawBlocks = [
+      {txt: recordingCard.eyebrow || 'Graphwar', size: unit*.032, weight:'700', color:'#cfe3c9', gap:unit*.08, max:1},
+      {txt: recordingCard.title, size: unit*.075, weight:'700', color:'#ffffff', gap:unit*.055, max:3},
+      {txt: recordingCard.subtitle, size: unit*.04, weight:'400', color:'#e8c98a', gap:unit*.045, max:4},
+      {txt: recordingCard.detail, size: unit*.03, weight:'400', color:'#a9c7a2', gap:0, max:3}
+    ].filter(b => b.txt);
+    let blocks = [], scale = 1;
+    for (let tries = 0; tries < 12; tries++, scale *= .9){
+      let totalH = 0;
+      blocks = rawBlocks.map((b, bi) => {
+        const size = Math.max(16, b.size * scale), gap = bi === rawBlocks.length - 1 ? 0 : b.gap * scale;
+        recordCtx.font = b.weight+' '+Math.round(size)+'px "DejaVu Sans",Verdana,sans-serif';
+        let lines = wrapCanvasText(recordCtx, b.txt, maxW);
+        if (lines.length > b.max){ lines = lines.slice(0, b.max); lines[b.max - 1] = lines[b.max - 1].replace(/[\s.·•,-]*$/, '') + '…'; }
+        totalH += lines.length * size * 1.18 + gap;
+        return {...b, size, gap, lines};
+      });
+      if (totalH <= maxH || tries === 11) break;
+    }
+    let totalH = blocks.reduce((sum, b) => sum + b.lines.length * b.size * 1.18 + b.gap, 0);
+    let cy = Math.max(safe + blocks[0].size, (rh - totalH) / 2 + blocks[0].size);
+    blocks.forEach(b => {
+      recordCtx.font = b.weight+' '+Math.round(b.size)+'px "DejaVu Sans",Verdana,sans-serif'; recordCtx.fillStyle = b.color;
+      b.lines.forEach((l, k) => recordCtx.fillText(l, safe, cy + k*b.size*1.18, maxW));
+      cy += b.lines.length*b.size*1.18 + b.gap;
+    });
     recordCtx.restore();
     if (!recordingCard.hold && now >= recordingCard.until) recordingCard = null;
   }
+  recordOutputCtx.setTransform(1, 0, 0, 1, 0, 0);
+  recordOutputCtx.globalAlpha = 1;
+  recordOutputCtx.globalCompositeOperation = 'source-over';
+  recordOutputCtx.filter = 'none';
+  recordOutputCtx.imageSmoothingEnabled = true;
+  recordOutputCtx.imageSmoothingQuality = 'high';
+  recordOutputCtx.drawImage(recordFrameCanvas || recordCanvas, 0, 0, recordCanvas.width, recordCanvas.height);
 }
 function finishVideoRecording(card){
   if (!recordingMode) return;
-  const delay = highlightCards ? 3200 : 1200;
+  const delay = highlightCards ? cardDuration(card, 'outro') : 1200;
   if (highlightCards) recordingCard = Object.assign({started:performance.now(),until:performance.now()+60000,hold:true},card);
   setExporting(true); exportBusy('Finishing recording\u2026');
   finishRecordingTimer = setTimeout(() => finalizeRecording(), delay);
@@ -1073,13 +1114,18 @@ function updateCamera(){
 function chatLog(sh, text){
   const el = document.createElement('div'); el.className = 'chat-line';
   const safe = text.replace(/</g,'&lt;');
-  el.innerHTML = '<b style="color:' + (sh.color || (sh.team===0?'#4caf50':'#e5484d')) + '">' + nm(sh) + ':</b> y = ' + safe;
+  const color = sh.color || (sh.team===0?'#4caf50':'#e5484d');
+  pushPortraitLog(nm(sh) + ': y = ' + text, color, false);
+  SFX.ding();
+  el.innerHTML = '<b style="color:' + color + '">' + nm(sh) + ':</b> y = ' + safe;
   $('chat').appendChild(el);
   while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
   $('chat').scrollTop = $('chat').scrollHeight;
   sh.bubble = text; sh.bubbleT = 0;
 }
 function chatSystem(text){
+  pushPortraitLog(text, '#f7a21b', true);
+  SFX.ding();
   const el = document.createElement('div'); el.className = 'chat-line sys'; el.textContent = '⚔ ' + text;
   $('chat').appendChild(el);
   while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
@@ -1096,6 +1142,7 @@ function fire(remoteExpr){
   if (mpState.mode === 'multiplayer') mpTurnNo++;
   if (battle){ chatLog(sh, inp.value); cameraShotCount++; }
   lastFired = {who: sh, text: inp.value};
+  graphToneDue = 0;
   setMsg(''); state = 'anim'; preview = null; updateUI(); SFX.fire();
   sh.bubble = inp.value; sh.bubbleT = 0; sh.typing = null; talk(sh, 'fire', 0.35);
   shot = {path:r.path, hits:r.hits.map(h => ({s:h.s, i:h.i, done:false})), end:r.end, i:0, team:sh.team, shooter:sh};
@@ -1115,15 +1162,15 @@ function afterShot(){
       $('overtxt').textContent = winnerName ? winnerName + ' team wins!' : (up.length ? 'Peace prevails (draw)' : 'Everyone lost');
       if(seriesRound < seriesTotal){
         $('over').style.display='none';
-        if(videoMode && highlightCards){ const now=performance.now(); recordingCard={eyebrow:'Round '+seriesRound+' of '+seriesTotal,title:winnerName ? winnerName+' wins the round' : 'Round drawn',subtitle:scoreLine(),detail:'Next round coming up',started:now,until:now+60000,hold:true}; }
-        const gid=gameId; setTimeout(()=>{ if(gid===gameId){ seriesRound++; setupBattleRound(false); } },videoMode&&highlightCards?2600:1600);
+        if(videoMode && highlightCards){ const now=performance.now(); const card={eyebrow:'Round '+seriesRound+' of '+seriesTotal,title:winnerName ? winnerName+' wins the round' : 'Round drawn',subtitle:scoreLine(),detail:'Next round coming up'}; recordingCard={...card,started:now,until:now+60000,hold:true}; }
+        const gid=gameId; setTimeout(()=>{ if(gid===gameId){ seriesRound++; setupBattleRound(false); } },videoMode&&highlightCards?cardDuration(recordingCard,'round'):1600);
       } else {
         $('over').style.display='flex';
         const leaders=seriesKinds.slice().sort((a,b)=>(seriesWins[b]||0)-(seriesWins[a]||0));
         const tied=leaders.length>1&&(seriesWins[leaders[0]]||0)===(seriesWins[leaders[1]]||0);
         const champion=tied?null:leaders[0], title=champion?BOTS[champion].name+' WINS':'SERIES DRAW';
         $('overtxt').textContent=seriesTotal>1?title+' — '+scoreLine():$('overtxt').textContent;
-        if(videoMode) finishVideoRecording({eyebrow:'Final result',title:title.charAt(0)+title.slice(1).toLowerCase(),subtitle:seriesTotal>1?scoreLine():(survivors+' survivor'+(survivors===1?'':'s')),detail:seriesTotal>1?seriesTotal+' rounds played':'Thanks for watching'});
+        if(videoMode) finishVideoRecording({eyebrow:'Final result',title:champion?BOTS[champion].name+' wins':'Series draw',subtitle:seriesTotal>1?scoreLine():(survivors+' survivor'+(survivors===1?'':'s')),detail:seriesTotal>1?seriesTotal+' rounds played':'Thanks for watching'});
         else if(seriesTotal===1){ const gid=gameId; setTimeout(()=>{ if(gid===gameId&&battle) startGame(); },4000/speed); }
       }
       return;
@@ -1160,11 +1207,28 @@ function afterShot(){
   }
   nextTurn();
 }
+function graphLineTone(){
+  if (!shot || !shot.path.length) return;
+  const now = VT.on ? VT.now : performance.now();
+  if (now < graphToneDue) return;
+  const i = Math.max(0, Math.min(shot.path.length - 1, Math.floor(shot.i) - 1));
+  const p = shot.path[i]; if (!p || p.gap) return;
+  const q = shot.path[Math.min(shot.path.length - 1, i + 8)] || p;
+  const notes = [196, 220, 247, 294, 330, 392, 440, 494, 587, 659, 784];
+  const pos = Math.max(0, Math.min(1, (15 - p.y) / 30));
+  const idx = Math.max(0, Math.min(notes.length - 1, Math.round(pos * (notes.length - 1))));
+  const slope = Math.max(-1, Math.min(1, (q.y - p.y) / Math.max(0.08, Math.abs(q.x - p.x)) / 3));
+  const f0 = notes[idx], f1 = f0 * Math.pow(2, slope * 0.08);
+  const vol = 0.055 + Math.min(0.035, Math.abs(slope) * 0.018);
+  SFX.graph(f0, f1, vol);
+  graphToneDue = now + (videoMode && battle ? 82 : 58);
+}
 function update(){
   if (state === 'anim' && shot){
     // Video mode uses a deliberately slower trace so the camera can follow the
     // leading point instead of snapping from the shooter straight to impact.
     shot.i += (videoMode && battle ? 10 * Math.min(speed, 2) : 45 * speed); const L = shot.path.length;
+    graphLineTone();
     for (const h of shot.hits) if (!h.done && h.i <= shot.i){ h.done = true; h.s.alive = false; stall = 0; SFX.death(); feed(nm(shot.shooter) + ' eliminated ' + nm(h.s)); if (battle) chatSystem(nm(shot.shooter) + ' eliminated ' + nm(h.s)); boom(h.s.x, h.s.y, 1.8); onKill(shot.shooter, h.s); updateUI(); }
     if (shot.i >= L){
       shot.i = L;
@@ -1276,8 +1340,9 @@ function cheatSolve(sh, dir){
 }
 function typeInto(str, cb){
   inp.value = ''; const gid = gameId, who = current; let i = 0; if (who) who.typing = '';
-  // ~14 chars/sec like a fast human typist, capped so long expressions still finish in ~3.5s
-  const base = Math.max(6, Math.min(70, 3500 / Math.max(1, str.length)));
+  // ~14 chars/sec like a fast human typist; longer expressions type progressively faster
+  // (not just capped at ~3.5s total) so they don't drag on
+  const base = Math.max(6, Math.min(70, 24750 / Math.pow(Math.max(1, str.length), 1.5)));
   (function tick(){
     if (gid !== gameId) return;
     i++; inp.value = str.slice(0, i); if (who) who.typing = inp.value;
@@ -1356,6 +1421,11 @@ if (location.hash.toLowerCase().includes('cheater')) {
   b.onclick=()=>{b.classList.toggle('on');b.setAttribute('aria-pressed',b.classList.contains('on'));}; rb.appendChild(b);
 }
 const nm = s => s.name || (s.team === 0 ? 'You' : 'Bot');
+function pushPortraitLog(text, color, sys=false){
+  if (!battle || !text) return;
+  portraitLogList.unshift({text:String(text).replace(/\s+/g, ' ').trim(), color:color || (sys ? '#f7a21b' : '#e8f5e9'), sys:!!sys, at:performance.now()});
+  portraitLogList = portraitLogList.slice(0, 5);
+}
 function feed(t){ feedList.unshift(t); feedList = feedList.slice(0, 3); $('feed').textContent = feedList.join('   ·   '); }
 function renderBoard(){
   $('board').innerHTML = teams.map(t => { const up = t.soldiers.some(s => s.alive);
@@ -1566,29 +1636,66 @@ function makeTerrain(){
   }
   refreshTerrain();
 }
-function scoreLine(){ return seriesKinds.map(k=>BOTS[k].name.replace(' Bot','')+' '+(seriesWins[k]||0)).join('  •  '); }
+const botShortName = k => (BOTS[k] ? BOTS[k].name.replace(' Bot', '') : String(k));
+function rosterLine(){
+  const names = seriesKinds.map(botShortName);
+  if (names.length <= 8) return names.join(' vs ');
+  return names.slice(0, 6).join(', ') + ' +' + (names.length - 6) + ' more teams';
+}
+function scoreLine(){
+  const ranked = seriesKinds.slice().sort((a,b)=>(seriesWins[b]||0)-(seriesWins[a]||0)||botShortName(a).localeCompare(botShortName(b)));
+  const list = (ranked.length > 10 ? ranked.slice(0, 8) : ranked).map(k=>botShortName(k)+' '+(seriesWins[k]||0));
+  return list.join('  •  ') + (ranked.length > list.length ? '  •  +' + (ranked.length - list.length) + ' more' : '');
+}
+function cardDuration(card, kind){
+  const text = [card?.title, card?.subtitle, card?.detail].filter(Boolean).join(' ');
+  const words = text ? text.trim().split(/\s+/).length : 0;
+  if (kind === 'intro') return Math.min(1200, 850 + Math.max(0, words - 8) * 25);
+  const base = kind === 'round' ? 2200 : 3200;
+  const extra = Math.max(0, words - 10) * 100 + Math.max(0, seriesKinds.length - 8) * 70;
+  return Math.min(kind === 'outro' ? 7200 : 6200, base + extra);
+}
+function battleIntroCard(first, now, prevCard){
+  const title = first ? 'Bot battle starts' : 'Round ' + seriesRound;
+  const detail = first ? allAlive().length + ' bots ready' : allAlive().length + ' bots left';
+  return {
+    eyebrow:'Graphwar',
+    title,
+    subtitle:first?rosterLine():scoreLine(),
+    detail,
+    started:prevCard?prevCard.started:now,
+    textStart:now,
+    instant:true,
+    until:now + cardDuration({title, subtitle:first?rosterLine():scoreLine(), detail}, 'intro')
+  };
+}
 function setupBattleRound(first){
   camera.x=CW/2; camera.y=CH/2; camera.zoom=1;
-  gameId++; cameraShotCount=0; const prevCard=first?null:recordingCard; recordingCard=null; lastFired=null; lastSay=null; botBusy=false; shot=null; expl=[]; preview=null; stall=0; feedList=[]; $('feed').textContent=''; $('chat').innerHTML='';
+  gameId++; cameraShotCount=0; const prevCard=first?null:recordingCard; recordingCard=null; lastFired=null; lastSay=null; botBusy=false; shot=null; expl=[]; preview=null; stall=0; graphToneDue=0; feedList=[]; portraitLogList=[]; $('feed').textContent=''; $('chat').innerHTML='';
   $('over').style.display = 'none';
   makeTerrain();
   const slot=46/seriesKinds.length;
   teams=seriesKinds.map(()=>({dir:1,soldiers:[],ptr:-1}));
+  const totalSoldiers = Math.max(1, seriesKinds.length * seriesPer);
+  const spacing = Math.max(1.35, Math.min(3.5, Math.sqrt((46 * 26) / totalSoldiers) * 0.82));
   seriesKinds.forEach((k,i)=>{
     for(let j=0;j<seriesPer;j++){
-      placeSoldier(i,-23+slot*i,-23+slot*(i+1),j,seriesPer);
+      placeSoldier(i,-23+slot*i,-23+slot*(i+1),j,seriesPer,spacing);
       const s = teams[i].soldiers[j];
       s.name=BOTS[k].name+(seriesPer>1?' '+(j+1):''); s.color=BOTS[k].color; s.kind=k;
     }
   });
   refreshTerrain(); turnTeam=teams.length-1; inp.value=''; roundPending = true;
+  pushPortraitLog('Round ' + seriesRound + ' begins: ' + rosterLine(), '#f7a21b', true);
+  if (videoMode && highlightCards && first) recordingCard = battleIntroCard(true, performance.now(), null);
   const gid0=gameId;
   const go=()=>VT.game(()=>{ if(gid0!==gameId) return;
   if (videoMode && highlightCards){
     const now = performance.now();
-    const firstTitle=seriesTotal>1?'BOT BATTLE SERIES':'BATTLE #'+battleNumber;
-    recordingCard={eyebrow:'Graphwar',title:first?(seriesTotal>1?seriesTotal+'-round battle':'Bot battle'):'Round '+seriesRound,subtitle:first?seriesKinds.map(k=>BOTS[k].name.replace(' Bot','')).join(' vs '):scoreLine(),detail:allAlive().length+' bots, '+teams.length+' teams',started:prevCard?prevCard.started:now,textStart:now,instant:true,until:now+2600};
-    const gid=gameId; setTimeout(()=>{ if(gid===gameId) nextTurn(); },4200);
+    if (!first || !recordingCard) recordingCard = battleIntroCard(first, now, prevCard);
+    else { recordingCard.textStart = now; recordingCard.until = now + cardDuration(recordingCard, 'intro'); }
+    const wait = Math.max(900, recordingCard.until - now);
+    const gid=gameId; setTimeout(()=>{ if(gid===gameId) nextTurn(); },wait);
   } else nextTurn();
   });
   // Wait until the recorder (and its virtual clock) is running so no game timer starts on the wrong clock.
@@ -1754,13 +1861,52 @@ const SFX = (() => {
     closeTap(){
       if (tap){ try { comp && comp.disconnect(tap); } catch(e){} tap = null; }
     },
-    key(){ tone(1500 + Math.random() * 500, 900, 0.035, 'square', 0.12); },
-    click(){ tone(700, 500, 0.06, 'triangle', 0.25); },
-    fire(){ tone(260, 1300, 0.3, 'sawtooth', 0.18); noise(0.25, 0.3, 4000, 800); },
-    boom(){ noise(0.6, 0.9, 1400, 120); tone(110, 35, 0.5, 'sine', 0.9); },
-    death(){ tone(520, 90, 0.35, 'square', 0.22); },
+    /* ---- Recreated artillery sound set ----
+       The original Graphwar (catabriga/graphwar) ships no audio at all — its rsc folder is
+       images and text only — so there is nothing to sample. These are hand-built layered
+       voices in the same spirit as classic artillery games: a mechanical launch, a whistling
+       shell, a deep two-stage explosion, wet elimination thud, chirpy typing and a fanfare. */
+    key(){ tone(1600 + Math.random() * 700, 820, 0.03, 'square', 0.1); noise(0.02, 0.07, 6000, 2500); },
+    click(){ tone(880, 520, 0.05, 'triangle', 0.22); noise(0.03, 0.12, 5000, 1200); },
+    // launch: breech clack -> powder thump -> rising shell whistle
+    fire(){
+      noise(0.05, 0.35, 7000, 1800);
+      tone(150, 60, 0.18, 'sawtooth', 0.32);
+      tone(90, 45, 0.28, 'sine', 0.5, 0.01);
+      tone(700, 1900, 0.34, 'triangle', 0.1, 0.05);
+      noise(0.3, 0.16, 2600, 700, 0.06);
+    },
+    // the pen tracing the curve: soft sine with an airy harmonic
+    graph(f0, f1, vol){
+      tone(f0, f1, 0.11, 'sine', vol);
+      tone(f0 * 2, f1 * 2, 0.09, 'triangle', vol * 0.22, 0.012);
+      tone(f0 * 0.5, f1 * 0.5, 0.13, 'sine', vol * 0.35, 0.004);
+    },
+    // impact: crack, body, sub-boom, then debris tail
+    boom(){
+      noise(0.06, 1.0, 9000, 3000);
+      noise(0.55, 0.85, 1500, 110, 0.01);
+      tone(120, 34, 0.55, 'sine', 0.95, 0.01);
+      tone(70, 28, 0.8, 'sine', 0.55, 0.05);
+      noise(0.5, 0.18, 900, 200, 0.14);
+    },
+    // elimination: descending squawk + small thud
+    death(){
+      tone(560, 80, 0.34, 'square', 0.2);
+      tone(300, 55, 0.3, 'sawtooth', 0.14, 0.02);
+      noise(0.18, 0.22, 800, 120, 0.04);
+    },
     talk(p){ tone(p, p * 1.2, 0.05, 'square', 0.08); tone(p * 1.1, p * 0.9, 0.06, 'square', 0.08, 0.06); },
-    win(){ [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.3, 'triangle', 0.35, i * 0.13)); }
+    ding(){ tone(1046, 1046, 0.22, 'sine', 0.16); tone(1568, 1568, 0.2, 'sine', 0.09, 0.02); tone(2093, 2093, 0.18, 'sine', 0.06, 0.03); },
+    // turn change: short two-note ping
+    turn(){ tone(660, 660, 0.09, 'triangle', 0.16); tone(990, 990, 0.12, 'triangle', 0.12, 0.08); },
+    // countdown tick
+    tick(){ tone(1200, 1200, 0.04, 'square', 0.1); },
+    win(){
+      [523, 659, 784, 1047].forEach((f, i) => { tone(f, f, 0.3, 'triangle', 0.35, i * 0.13); tone(f * 2, f * 2, 0.2, 'sine', 0.1, i * 0.13); });
+      tone(1047, 1047, 0.7, 'triangle', 0.3, 0.52); tone(1568, 1568, 0.7, 'sine', 0.12, 0.52);
+      noise(0.5, 0.1, 6000, 1500, 0.52);
+    }
   };
 })();
 ['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, () => SFX.unlock(), {capture: true}));
@@ -1814,9 +1960,13 @@ const canTalk = s => battle || s.team === 1 || auto;
 const pickOf = a => a[Math.floor(Math.random() * a.length)];
 function say(s, text, cat='talk'){
   s.say = {text, t: 0}; lastSay = {who: s, text, at: performance.now()};
+  SFX.ding();
+  s.say = {text, t: 0}; lastSay = {who: s, text, at: performance.now()};
   if (battle){
     const el = document.createElement('div'); el.className = 'chat-line';
-    el.innerHTML = '<b style="color:' + (s.color || '#c62828') + '">' + nm(s) + ':</b> <i>“' + text.replace(/</g, '&lt;') + '”</i>';
+    const color = s.color || '#c62828';
+    pushPortraitLog(nm(s) + ': “' + text + '”', color, false);
+    el.innerHTML = '<b style="color:' + color + '">' + nm(s) + ':</b> <i>“' + text.replace(/</g, '&lt;') + '”</i>';
     $('chat').appendChild(el);
     while ($('chat').children.length > 40) $('chat').removeChild($('chat').firstChild);
     $('chat').scrollTop = $('chat').scrollHeight;
@@ -1850,7 +2000,14 @@ function onKill(sh, v){
 /* ---------- drawing ---------- */
 function drawSoldier(s, t){
   const x = X(s.x), y = Y(s.y), r = 0.8 * PXU, col = s.color || '#3a3a3a';
-  const label = s.name || (s.team === 0 ? 'Player 1' : 'Player 2'), edge = s.color || (s.team === 0 ? '#1b7f6b' : '#222');
+  const aliveCount = teams ? allAlive().length : 0;
+  const dense = aliveCount > 28, compact = aliveCount > 14;
+  // Names are ALWAYS drawn above living soldiers. Previously they were hidden once more than
+  // 28 soldiers were alive, so labels blinked in and out as the count crossed that threshold.
+  const showLabel = true;
+  const rawLabel = s.name || (s.team === 0 ? 'Player 1' : 'Player 2');
+  const label = compact ? rawLabel.replace(' Bot', '').replace('Parametric', 'Param').replace('Polynomial', 'Poly').replace('Irrational', 'Irr').replace('Resolution', 'Resol').replace('Escalation', 'Escal').replace('Detective', 'Detect') : rawLabel;
+  const edge = s.color || (s.team === 0 ? '#1b7f6b' : '#222');
   if (s === current && (state === 'aim' || state === 'anim')){
     ctx.save(); ctx.shadowColor = '#ff2a1a'; ctx.shadowBlur = 14; ctx.strokeStyle = '#ff3b2a'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(x, y, r + 1, 0, 7); ctx.stroke(); ctx.restore();
@@ -1860,7 +2017,8 @@ function drawSoldier(s, t){
   ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(x - s.dir * r * 0.25, y - r * 0.45, r * 0.22, 0, 7); ctx.fill();
   ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x + s.dir * r * 0.35, y + r * 0.2, 1.8, 0, 7); ctx.fill();
   ctx.strokeStyle = '#333'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
-  ctx.font = '12px "DejaVu Sans",Verdana,sans-serif'; ctx.textAlign = 'center';
+  if (!showLabel) return;
+  ctx.font = (compact ? '10px' : '12px') + ' "DejaVu Sans",Verdana,sans-serif'; ctx.textAlign = 'center';
   const w = ctx.measureText(label).width + 10; let lx = Math.max(w / 2 + 1, Math.min(CW - w / 2 - 1, x)), ly = y - r - 9;
   if (ly - 13 < 2) ly = y + r + 22;
   ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.strokeStyle = edge; ctx.lineWidth = 1.2;
