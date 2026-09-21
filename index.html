@@ -523,7 +523,12 @@ function updateUI(){
 }
 
 /* ---------- physics ---------- */
+/* Dot-style bots (Dot Bot) fire a trail of separate DOTS instead of a continuous line:
+   the function is only "sampled" every DOT_N steps, dots are never joined, hits and terrain
+   are only checked where a dot actually lands, so a dot shot can hop over walls. */
+const DOTTY = {dot:true}, DOT_N = 15;
 function simulate(f, sh, dir){
+  const dotted = !!(sh && DOTTY[sh.kind]);
   const path = [], hits = [], hitSet = new Set();
   const off = sh.y - f(dir * sh.x);
   if (!isFinite(off)) return {path, hits, end:null};
@@ -535,7 +540,9 @@ function simulate(f, sh, dir){
     const y = f(dir * x) + off;
     if (!isFinite(y) || Math.abs(y) > 40) break;
     let pts = [[x, y]];
-    if (py !== null && Math.abs(y - py) > 0.1){
+    if (dotted){
+      if (n % DOT_N){ path.push({x, y, gap:true}); continue; }   // between dots: travel only, no collision
+    } else if (py !== null && Math.abs(y - py) > 0.1){
       const k = Math.min(400, Math.ceil(Math.abs(y - py) / 0.1)); pts = [];
       for (let j = 1; j <= k; j++) pts.push([px + (x-px)*j/k, py + (y-py)*j/k]);
     }
@@ -778,7 +785,7 @@ function wrapCanvasText(c, text, maxW){
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
-let pvSmall = null, pvMid = null, pvFresh = true;
+let pvSmall = null, pvMid = null, pvFresh = true, pvErrShown = false;
 function pvBackdrop(c, rw, rh){
   if (!pvSmall){ pvSmall = document.createElement('canvas'); pvSmall.width = 27; pvSmall.height = 48; pvMid = document.createElement('canvas'); pvMid.width = 108; pvMid.height = 192; }
   const s = pvSmall.getContext('2d'), sc = Math.max(27 / CW, 48 / CH), dw = CW * sc, dh = CH * sc;
@@ -818,10 +825,10 @@ function composePortraitScene(t){
   c.textAlign = 'right'; c.font = '700 26px ' + PV_SANS; c.fillStyle = '#d8e6d3';
   c.fillText(seriesTotal > 1 ? 'Round ' + seriesRound + ' of ' + seriesTotal : 'Bot battle', rw - m, 62);
   const hook = isOver ? 'BATTLE OVER' : (aliveTeams === 2 && teams.length > 2) ? 'FINAL TWO' : down < 0.1 ? 'WHO WINS THIS?' : alive + ' LEFT STANDING';
-  pvCaption(c, hook, rw / 2, 178, 58, iw);
+  pvCaption(c, hook, rw / 2, 150, 58, iw);
 
   // battlefield, full width
-  const bfY = 230, bfH = Math.round(rw * CH / CW);
+  const bfY = 196, bfH = Math.round(rw * CH / CW);
   c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
   c.drawImage(cv, 0, bfY, rw, bfH);
   // cinematic grade: soft vignette + slight warm/contrast tint, clipped to the battlefield
@@ -838,6 +845,17 @@ function composePortraitScene(t){
   c.fillStyle = gl2; c.fillRect(0, bfY + bfH, rw, 26);
   c.fillStyle = 'rgba(0,0,0,.7)'; c.fillRect(0, bfY - 2, rw, 2); c.fillRect(0, bfY + bfH, rw, 2);
 
+  // ---- adaptive layout: scoreboard is sized from the team count first, the equation box
+  // then takes whatever room is left, and the caption block is anchored between them.
+  const n = teams.length;
+  const cols = n <= 4 ? 1 : n <= 8 ? 2 : n <= 15 ? 3 : 4, rows = Math.ceil(n / cols);
+  const gx = cols >= 4 ? 14 : 20, padX = 16, padY = 12;
+  const rowH = cols === 1 ? 44 : cols === 2 ? 44 : 34;
+  const ph = padY * 2 + rows * rowH, sbBottom = 1224, top = sbBottom - ph;
+  const capBase = bfY + bfH - 26;           // captions are burned in over the bottom of the battlefield
+  const eqTop = bfY + bfH + 40 + 16, eqMaxBottom = top - 16;
+  const maxEh = Math.max(110, Math.min(300, eqMaxBottom - eqTop));
+
   // who is shooting + their equation
   let y = bfY + bfH + 40;
   const typing = !!(cur && cur.typing != null);
@@ -848,32 +866,45 @@ function composePortraitScene(t){
   const status = !cur || isOver ? '' : typing ? 'typing…' : state === 'aim' ? 'thinking…' : state === 'anim' ? 'fired' : '';
   c.textAlign = 'right'; c.fillStyle = '#c5d6c0'; c.font = '400 26px ' + PV_SANS; c.fillText(status, rw - m, y - 2); c.textAlign = 'left';
   y += 16;
-  const eh = 140; rrect(c, m, y, iw, eh, 14); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill();
   let txt = null;
   if (typing) txt = cur.typing; else if (lastFired && lastFired.who === cur) txt = lastFired.text;
+  let eh = Math.min(140, maxEh), eqLines = null, eqFs = 15;
+  const pad = 18, innerW = iw - pad * 2, LH = 1.25;
+  if (txt !== null){
+    const full = 'y = ' + txt + (typing ? '|' : ''), sizes = [34, 30, 27, 24, 22, 20, 18, 17, 16, 15, 14], maxInner = maxEh - pad * 2 + 6;
+    let fitted = false;
+    for (const sz of sizes){
+      c.font = '600 ' + sz + 'px ' + PV_MONO;
+      const cw = c.measureText('M').width, ls = wrapFn(full, Math.max(8, Math.floor(innerW / cw)));
+      eqFs = sz; eqLines = ls;
+      if (ls.length * sz * LH <= maxInner){ fitted = true; break; }
+    }
+    if (!fitted){
+      // Still too long at the smallest size: keep what fits and mark the cut with an ellipsis.
+      // While typing show the newest end so the cursor stays visible; otherwise show the start.
+      const maxL = Math.max(1, Math.floor(maxInner / (eqFs * LH)));
+      if (typing) eqLines = ['…' + eqLines[eqLines.length - maxL].slice(1)].concat(eqLines.slice(-maxL + 1));
+      else { eqLines = eqLines.slice(0, maxL); eqLines[maxL - 1] = eqLines[maxL - 1].replace(/.{0,2}$/, '') + '…'; }
+    }
+    eh = Math.max(Math.min(140, maxEh), Math.min(maxEh, Math.ceil(eqLines.length * eqFs * LH + pad * 2 - 6)));
+  }
+  rrect(c, m, y, iw, eh, 14); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill();
   if (txt === null){
     c.fillStyle = '#9fb59a'; c.font = 'italic 400 28px ' + PV_SANS; c.textAlign = 'center';
     c.fillText(isOver ? 'Battle over' : '…', rw / 2, y + eh / 2 + 9); c.textAlign = 'left';
   } else {
-    const full = 'y = ' + txt + (typing ? '|' : ''), pad = 20, innerW = iw - pad * 2, innerH = eh - pad * 2 + 6, sizes = [34, 30, 27, 24, 21, 19, 17, 15];
-    let fs = 15, lines = null;
-    for (const sz of sizes){
-      c.font = '600 ' + sz + 'px ' + PV_MONO;
-      const cw = c.measureText('M').width, ls = wrapFn(full, Math.max(8, Math.floor(innerW / cw)));
-      fs = sz; lines = ls;
-      if (ls.length * sz * 1.28 <= innerH) break;
-    }
-    c.font = '600 ' + fs + 'px ' + PV_MONO; c.fillStyle = '#f4f4ee';
+    c.font = '600 ' + eqFs + 'px ' + PV_MONO; c.fillStyle = '#f4f4ee';
     const blink = Math.floor(t / 400) % 2 === 0;
-    lines.forEach((ln, i) => {
-      if (typing && i === lines.length - 1) ln = ln.slice(0, -1) + (blink ? '|' : '');
-      c.fillText(ln, m + pad, y + pad + fs * 1.0 + i * fs * 1.28, innerW);
+    const textH = eqLines.length * eqFs * LH, y0 = y + (eh - textH) / 2 + eqFs * 0.95;
+    eqLines.forEach((ln, i) => {
+      if (typing && i === eqLines.length - 1) ln = ln.slice(0, -1) + (blink ? '|' : '');
+      c.fillText(ln, m + pad, y0 + i * eqFs * LH, innerW);
     });
   }
   y += eh;
 
-  // captions: latest chatter, else the latest elimination
-  const say = lastSay && t - lastSay.at < 3600 ? lastSay : null, capY = y + 64;
+  // captions: latest chatter, else the latest elimination (burned in over the bottom of the battlefield)
+  const say = lastSay && t - lastSay.at < 3600 ? lastSay : null, capY = capBase - 50;
   if (say){
     const age = t - say.at, alpha = age > 3200 ? Math.max(0, 1 - (age - 3200) / 400) : Math.min(1, age / 120);
     c.save(); c.globalAlpha = alpha; c.textAlign = 'center'; c.lineJoin = 'round';
@@ -882,30 +913,34 @@ function composePortraitScene(t){
     c.restore();
     c.font = '900 40px ' + PV_BOLD;
     const lines = wrapCanvasText(c, '“' + say.text + '”', iw - 20).slice(0, 2);
-    lines.forEach((l, i) => pvCaption(c, l, rw / 2, capY + 10 + i * 50, 40, iw - 20, alpha));
+    // one line sits low (closer to the scoreboard), two lines stack upward
+    const baseY = capY + 10 + 50 - (lines.length - 1) * 0 ;
+    lines.forEach((l, i) => pvCaption(c, l, rw / 2, baseY - (lines.length - 1 - i) * 50, 40, iw - 20, alpha));
   } else if (feedList.length){
-    pvCaption(c, feedList[0], rw / 2, capY + 6, 34, iw - 20, 0.9);
+    pvCaption(c, feedList[0], rw / 2, capY + 60, 34, iw - 20, 0.9);
   }
 
-  // scoreboard
-  const top = 1010, n = teams.length, cols = n > 4 ? 2 : 1, rows = Math.ceil(n / cols), gx = 24, padX = 18, padY = 12;
-  const ph = Math.min(200, padY * 2 + rows * 50);
-  rrect(c, m, top, iw, ph, 16); c.fillStyle = 'rgba(0,0,0,.42)'; c.fill();
-  const rowH = Math.min(50, (ph - padY * 2) / rows), cwid = (iw - padX * 2 - gx * (cols - 1)) / cols;
-  const fz = Math.max(15, Math.min(25, Math.floor(rowH * .5)));
+  // scoreboard (compact multi-column grid when there are lots of teams)
+  rrect(c, m, top, iw, ph, 16); c.fillStyle = 'rgba(0,0,0,.5)'; c.fill();
+  const cwid = (iw - padX * 2 - gx * (cols - 1)) / cols, dot = cols >= 3 ? 7 : 10;
   teams.forEach((T, i) => {
     const kind = T.soldiers[0].kind, up = T.soldiers.filter(s => s.alive).length, len = T.soldiers.length;
     const cx = m + padX + (i % cols) * (cwid + gx), cyy = top + padY + Math.floor(i / cols) * rowH + rowH / 2;
     const wins = seriesTotal > 1 ? seriesWins[kind] || 0 : 0;
     const isTurn = !isOver && cur && cur.team === i;
-    if (isTurn){ rrect(c, cx - 8, cyy - rowH / 2 + 3, cwid + 16, rowH - 6, 10); c.fillStyle = 'rgba(255,255,255,.16)'; c.fill(); }
+    if (isTurn){ rrect(c, cx - 6, cyy - rowH / 2 + 2, cwid + 12, rowH - 4, 8); c.fillStyle = 'rgba(255,255,255,.18)'; c.fill(); }
     c.globalAlpha = up ? 1 : .4;
-    c.fillStyle = BOTS[kind].color; c.beginPath(); c.arc(cx + 10, cyy, 10, 0, 7); c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 2; c.stroke();
-    const label = BOTS[kind].name.replace(' Bot', '') + (wins ? '  ★' + wins : '');
-    c.font = '700 ' + fz + 'px ' + PV_SANS; c.fillStyle = '#eef7ea'; c.textAlign = 'left';
-    c.fillText(label, cx + 30, cyy + fz * .35, cwid - 90);
-    if (!up){ const w = Math.min(cwid - 90, c.measureText(label).width); c.fillRect(cx + 28, cyy, w + 4, 2); }
-    c.textAlign = 'right'; c.fillStyle = up ? '#f7a21b' : '#cfe3c9'; c.fillText(up + '/' + len, cx + cwid, cyy + fz * .35); c.textAlign = 'left';
+    c.fillStyle = BOTS[kind].color; c.beginPath(); c.arc(cx + dot, cyy, dot, 0, 7); c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke();
+    const label = BOTS[kind].name.replace(' Bot', '') + (wins ? ' ★' + wins : ''), score = up + '/' + len;
+    let fz = Math.min(25, Math.floor(rowH * .55));
+    const fit = () => { c.font = '700 ' + fz + 'px ' + PV_SANS; return cwid - (dot * 2 + 8) - c.measureText(score).width - 8; };
+    while (fz > 11 && c.measureText(label).width > fit()) fz--;
+    fit();
+    c.fillStyle = '#eef7ea'; c.textAlign = 'left';
+    const lx = cx + dot * 2 + 8, lw = Math.min(c.measureText(label).width, fit());
+    c.fillText(label, lx, cyy + fz * .35, lw);
+    if (!up){ c.fillRect(lx - 2, cyy, lw + 4, 2); }
+    c.textAlign = 'right'; c.fillStyle = up ? '#f7a21b' : '#cfe3c9'; c.fillText(score, cx + cwid, cyy + fz * .35); c.textAlign = 'left';
     c.globalAlpha = 1;
   });
   c.restore();
@@ -915,7 +950,18 @@ function composeRecordingFrame(t){
   const rw = recordLW, rh = recordLH;
   recordCtx.setTransform(recordKX, 0, 0, recordKY, 0, 0);
   if (rh > rw && teams){
-    composePortraitScene(t);
+    try { composePortraitScene(t); pvErrShown = false; }
+    catch (err){
+      // Never leave a half-drawn frame (just the blurred backdrop): reset the canvas state and
+      // draw the plain battlefield instead, and report the error so it can be tracked down.
+      console.error('portrait compose failed', err);
+      if (!pvErrShown){ pvErrShown = true; try { setMsg('Video layout error: ' + ((err && err.message) || err), true); } catch(e2){} }
+      if (recordCtx.reset) recordCtx.reset(); else { try { for (let i = 0; i < 20; i++) recordCtx.restore(); } catch(e3){} }
+      recordCtx.setTransform(recordKX, 0, 0, recordKY, 0, 0);
+      recordCtx.fillStyle = '#0c160e'; recordCtx.fillRect(0, 0, rw, rh);
+      const bh = Math.round(rw * CH / CW);
+      recordCtx.drawImage(cv, 0, Math.round((rh - bh) / 2), rw, bh);
+    }
   } else {
     recordCtx.fillStyle = '#fff'; recordCtx.fillRect(0, 0, rw, rh);
     const scale = Math.max(rw / CW, rh / CH), dw = CW * scale, dh = CH * scale;
@@ -1179,7 +1225,7 @@ function botSolve(sh, dir, level, cap = 99){
       const last = r.path[r.path.length-1];
       reach = Math.min(1, Math.abs(last.x - sh.x) / Math.max(0.5, Math.abs(nearestX - sh.x)));
       for (let i = 0; i < r.path.length; i += 6){
-        const q = r.path[i];
+        const q = r.path[i]; if (q.gap) continue;
         for (const en of foes){ const d = Math.hypot(en.x - q.x, en.y - q.y); if (d < closest) closest = d; }
       }
     }
@@ -1278,6 +1324,14 @@ const BOTS = {
   chaos:{name:'Chaos Bot', color:'#ff6f00', desc:'Unpredictable, energetic and delighted by ridiculous trajectories.'},
   pirate:{name:'Pirate Bot', color:'#795548', desc:'A theatrical pirate who narrates every shot like a boarding action.'},
   larp:{name:'LARP Bot', color:'#7b1fa2', desc:'Treats every battle like a fantasy roleplay: quests, spells, armor and dramatic declarations.'},
+  dot:{name:'Dot Bot', color:'#43a047', desc:'Fires separate dots, not a line: discrete steps and chaotic wobbles that hop over obstacles.'},
+  locus:{name:'Locus Bot', color:'#5c6bc0', desc:'Traces geometric loci: parabolas, hyperbola branches and witch-of-Agnesi bumps.'},
+  escal:{name:'Escalation Bot', color:'#bf360c', desc:'Every wave is bigger than the last: amplitude grows the farther the shot travels.'},
+  resol:{name:'Resolution Bot', color:'#7cb342', desc:'Damped oscillations that settle into a calm straight line on the target.'},
+  sniper:{name:'Sniper Bot', color:'#212121', desc:'Plain straight lines, one clean shot at a time.'},
+  bounce:{name:'Bounce Bot', color:'#039be5', desc:'Rides |sin| bounces that ricochet along the ground.'},
+  sinc:{name:'Sinc Bot', color:'#00bfa5', desc:'A ringing sinc pulse that fades out after the target.'},
+  stairs:{name:'Stairs Bot', color:'#6d4c41', desc:'Horizontal runs and vertical jumps built from logistic steps, like the classic Graphwar bots.'},
   cheater:{name:'Cheater Bot', color:'#ff1744', desc:'SECRET BOT — cheats its way through the battle.'}
 };
 const DEFAULT_ROSTER = ['peace', 'param', 'zig', 'gibbs', 'love', 'detective'];
@@ -1346,6 +1400,44 @@ function zigzagSolve(sh, dir, forced){
   }
   return botSolve(sh, dir, 'hard').expr;
 }
+const xm = c => c >= 0 ? 'x-' + R(c) : 'x+' + R(-c);
+function shotScore(sh, dir, expr){
+  try { const h = simulate(compile(expr), sh, dir).hits; let e = 0, o = 0; for (const k of h) k.s.team === sh.team ? o++ : e++; return {e, o}; }
+  catch(_){ return {e:-1, o:99}; }
+}
+function dotSolve(sh, dir){
+  // Real aiming first (the shot is simulated as DOTS), then add a chaotic wobble that is kept
+  // only if the dots still land on every enemy the plain version hit.
+  const base = botSolve(sh, dir, 'hard').expr, b = shotScore(sh, dir, base);
+  let best = base;
+  for (let k = 0; k < 90; k++){
+    const e = base + ' + ' + R(rnd(0.08, 0.3)) + '*sin(' + R(rnd(0.25, 1.6)) + '*x^2)';
+    const r = shotScore(sh, dir, e);
+    if (r.e >= b.e && r.o <= b.o){ best = e; break; }
+  }
+  return best;
+}
+function stairsSolve(sh, dir){
+  const ahead = aheadOf(sh, dir).sort((a, b) => a.x - b.x), s0 = {x: dir * sh.x, y: sh.y}, K = 60;
+  const build = (seq, lead) => {
+    let y = s0.y, prevA = s0.x, out = R(s0.y);
+    for (const t of seq){
+      const a = Math.max(prevA + 0.3, t.x - lead);
+      out += ' + ' + R(t.y - y) + '/(1+exp(-' + K + '*(' + xm(a) + ')))';
+      y = t.y; prevA = a;
+    }
+    return out;
+  };
+  let best = null, bs = -1e9;
+  const want = 10 * ahead.length;
+  for (let k = 0; k < 220 && bs < want; k++){
+    let seq = k === 0 ? ahead : ahead.filter(() => Math.random() < 0.6);
+    if (!seq.length) seq = [pickOf(ahead)];
+    const expr = build(seq, rnd(0.3, 1.8)), r = shotScore(sh, dir, expr), sc = r.e * 10 - r.o * 12;
+    if (sc > bs){ bs = sc; best = expr; }
+  }
+  return best || botSolve(sh, dir, 'hard').expr;
+}
 function peaceSolve(sh){
   const en = enemiesOf(sh);
   if (new Set(en.map(e => e.team)).size <= 1){
@@ -1383,6 +1475,26 @@ function battleSolve(sh){
     case 'loggy': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-6, 6)) + '*ln(abs(x' + (Math.random() < 0.5 ? '-' : '+') + R(rnd(0, 12)) + ')+1)', 400); break;
     case 'rat': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-6, 6)) + '/(1 + (x' + (Math.random() < 0.5 ? '-' : '+') + R(rnd(0, 18)) + ')^2)', 400); break;
     case 'sig': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-5, 5)) + '*atan(' + R(rnd(0.2, 2)) + '*x + ' + R(rnd(-10, 10)) + ') + ' + R(rnd(-5, 5)) + '*atan(' + R(rnd(0.2, 2)) + '*x + ' + R(rnd(-10, 10)) + ')', 400); break;
+    case 'dot': expr = dotSolve(sh, dir); break;
+    case 'stairs': expr = stairsSolve(sh, dir); break;
+    case 'locus': {
+      const ah = aheadOf(sh, dir), cc = () => (ah.length ? pickOf(ah).x : dir * sh.x + 8) + rnd(-5, 5);
+      const fams = [
+        sl => R(sl) + '*x + ' + R(rnd(-0.14, 0.14)) + '*(' + xm(cc()) + ')^2',
+        sl => R(sl) + '*x + ' + R(rnd(-4, 4)) + '*sqrt(1+((' + xm(cc()) + ')/' + R(rnd(1.5, 6)) + ')^2)',
+        sl => R(sl) + '*x + ' + R(rnd(-8, 8)) + '/(1+((' + xm(cc()) + ')/' + R(rnd(1.5, 5)) + ')^2)'
+      ];
+      expr = searchBest(sh, dir, sl => pickOf(fams)(sl), 400); break;
+    }
+    case 'escal': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(0.04, 0.22)) + '*(' + xm(dir * sh.x) + ')*sin(' + R(rnd(0.8, 3)) + '*x + ' + R(rnd(0, 6.28)) + ')', 400); break;
+    case 'resol': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(-6, 6)) + '*exp(-' + R(rnd(0.08, 0.4)) + '*(' + xm(dir * sh.x) + '))*sin(' + R(rnd(0.6, 2.5)) + '*x + ' + R(rnd(0, 6.28)) + ')', 400); break;
+    case 'sniper': expr = searchBest(sh, dir, sl => R(sl) + '*x', 400); break;
+    case 'bounce': expr = searchBest(sh, dir, sl => R(sl) + '*x + ' + R(rnd(0.5, 4)) + '*abs(sin(' + R(rnd(0.4, 2.5)) + '*x + ' + R(rnd(0, 6.28)) + '))', 400); break;
+    case 'sinc': {
+      const ah = aheadOf(sh, dir);
+      expr = searchBest(sh, dir, sl => { const c = xm((ah.length ? pickOf(ah).x : dir * sh.x + 8) + rnd(-3, 3));
+        return R(sl) + '*x + ' + R(rnd(-8, 8)) + '*sin(' + R(rnd(1, 4)) + '*(' + c + '))/(abs(' + c + ')+0.6)'; }, 400); break;
+    }
     case 'love': {
       // Love still plays normally: it must solve for a real target before
       // adding its mathematical style. There are no particle/heart overlays.
@@ -1687,6 +1799,14 @@ const TALK = {
   chaos:{think:['What if I do something completely unnecessary?','I have an idea. It is probably terrible.'], fire:['CHAOS!','No plan. Maximum curve.'], kill:['YES! That actually worked!','Beautifully stupid.'], die:['Worth it.','That was hilarious right up until the end.'], win:['CHAOS PREVAILS!','I cannot believe that worked.']},
   pirate:{think:['Arrr, where be the cleanest course?','Charting the trajectory, matey.'], fire:['Fire the curve, arrr!','Send it to Davy Jones!'], kill:['Direct hit, matey!','That be one less enemy ship.'], die:['Avast! I have been boarded.','The ship is sinking!'], win:['Victory be ours!','A fine haul of glory, matey.']},
   larp:{think:['The quest demands a precise arc.','I shall consult the ancient trajectory scrolls.'], fire:['By the power of the realm, fire!','Unleash the spell!'], kill:['Critical hit! The foe has fallen!','Your armor could not withstand my attack!'], die:['My armor has failed me!','I fall, but the quest continues!'], win:['The realm is saved!','Quest complete! The victory is ours!']},
+  dot:{think:['Placing dots. Just dots.','Between the dots is nothing.'], fire:['Dots away!','Hop, hop, hop!'], kill:['Dot connected.','Hopped right over the wall.'], die:['I was only dots…','Disconnected.'], win:['Every dot counted!','Discrete victory!']},
+  locus:{think:['Which locus fits this point?','Tracing the set of all points…'], fire:['Locus locked in!','Conic incoming!'], kill:['Point on the locus.','Right on the curve.'], die:['Undefined locus…','Off the curve…'], win:['Q.E.D.!','The locus wins!']},
+  escal:{think:['Bigger. Louder. More.','Turning it up a notch.'], fire:['Escalating!','It only gets bigger!'], kill:['Escalation successful.','Told you it would grow.'], die:['That got out of hand…','Escalated too far…'], win:['Peak amplitude!','Maximum escalation!']},
+  resol:{think:['Let us settle this calmly.','Damping the noise…'], fire:['Resolving it now.','Settling down…'], kill:['Resolved.','Conflict settled.'], die:['Unresolved…','Fully damped…'], win:['Peace through settling.','Resolved, finally.']},
+  sniper:{think:['Steady…','Wind check. There is no wind.'], fire:['One shot.','Breathe. Fire.'], kill:['One shot, one kill.','Clean.'], die:['Compromised position…','Never saw it coming.'], win:['Mission complete.','Straight and true.']},
+  bounce:{think:['Boing boing…','Finding the ground.'], fire:['Bouncing in!','Boing!'], kill:['Bounced you out!','Ricochet!'], die:['Lost my bounce…','Flat.'], win:['Bounce back champion!','Boing-boing victory!']},
+  sinc:{think:['Ringing a pulse…','Sinc or swim.'], fire:['Pulse away!','Ring-a-ding!'], kill:['Sinc-ed you.','Main lobe direct hit.'], die:['Side lobes got me…','Faded out…'], win:['Perfectly band-limited!','Sinc-ing high!']},
+  stairs:{think:['Horizontal, vertical, horizontal…','Counting steps.'], fire:['Step by step!','Climbing!'], kill:['Stepped on you.','Straight up the stairs.'], die:['Fell down the stairs…','Missed a step…'], win:['Top of the staircase!','Step by step to victory!']},
   cheater:{think:['I know where this is going.','Rules are optional.'], fire:['Skill issue.','I am totally not cheating.'], kill:['Calculated. Definitely calculated.','The rules cannot stop me.'], die:['Wait, that was not supposed to happen.'], win:['Easy.','Nobody check the replay.']}
 };
 const canTalk = s => battle || s.team === 1 || auto;
@@ -1810,6 +1930,9 @@ function pathStroke(pts, n){
   for (let i = 0; i < n && i < pts.length; i++){ const p = pts[i]; i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y)); }
   ctx.stroke();
 }
+function pathDots(pts, n){
+  for (let i = 0; i < n && i < pts.length; i++){ const p = pts[i]; if (p.gap) continue; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 3.4, 0, 7); ctx.fill(); }
+}
 function draw(t){
   if (!VT.on) updateCamera();
   ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
@@ -1826,7 +1949,8 @@ function draw(t){
   }
   if (shot){
     const sc = (shot.shooter && shot.shooter.color) || '#222';
-    ctx.strokeStyle = sc; ctx.lineWidth = 2; pathStroke(shot.path, shot.i);
+    ctx.strokeStyle = sc; ctx.lineWidth = 2;
+    if (shot.shooter && DOTTY[shot.shooter.kind]){ ctx.fillStyle = sc; pathDots(shot.path, shot.i); } else pathStroke(shot.path, shot.i);
     const p = shot.path[Math.min(shot.i, shot.path.length) - 1];
     if (p){ ctx.fillStyle = sc; ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 3, 0, 7); ctx.fill(); }
   }
