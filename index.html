@@ -912,8 +912,12 @@ function composePortraitScene(t){
   const eh = Math.max(130, Math.min(300, logBottom - logTop));
   rrect(c, m, logTop, iw, eh, 14); c.fillStyle = 'rgba(0,0,0,.55)'; c.fill();
   c.fillStyle = '#9fb59a'; c.font = '700 18px ' + PV_SANS; c.fillText('LIVE CHAT', m + pad, logTop + 27, innerW);
-  const logs = portraitLogList.length ? portraitLogList.slice(0, 5).reverse() : [{text:'Round ' + seriesRound + ' begins', color:'#f7a21b', sys:true}];
-  const fs = logs.length >= 5 ? 20 : 22, lineH = logs.length >= 5 ? 27 : 31;
+  // Fit up to ten recent entries into the full panel height. On unusually short
+  // panels, reduce the count rather than letting text overlap the scoreboard.
+  const maxLogs = Math.max(1, Math.min(10, Math.floor((eh - 60) / 24)));
+  const logs = portraitLogList.length ? portraitLogList.slice(0, maxLogs).reverse() : [{text:'Round ' + seriesRound + ' begins', color:'#f7a21b', sys:true}];
+  const lineH = Math.min(31, (eh - 66) / Math.max(1, logs.length));
+  const fs = Math.max(15, Math.min(22, lineH - 5));
   let logY = logTop + 60;
   logs.forEach((entry, idx) => {
     const newest = idx === logs.length - 1;
@@ -1424,7 +1428,7 @@ const nm = s => s.name || (s.team === 0 ? 'You' : 'Bot');
 function pushPortraitLog(text, color, sys=false){
   if (!battle || !text) return;
   portraitLogList.unshift({text:String(text).replace(/\s+/g, ' ').trim(), color:color || (sys ? '#f7a21b' : '#e8f5e9'), sys:!!sys, at:performance.now()});
-  portraitLogList = portraitLogList.slice(0, 5);
+  portraitLogList = portraitLogList.slice(0, 10);
 }
 function feed(t){ feedList.unshift(t); feedList = feedList.slice(0, 3); $('feed').textContent = feedList.join('   ·   '); }
 function renderBoard(){
