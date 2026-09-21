@@ -195,6 +195,7 @@ canvas{display:block;width:100%;height:auto}
         <p class="mh">Available Rooms</p>
         <p class="mp-status" id="mpListStatus">Loading...</p>
         <div id="mpRoomList"></div>
+        <button class="mbtn ghost" id="mpRefreshRooms">Refresh</button>
       </div>
       <button class="mbtn ghost" data-back="2">Back</button>
     </div>
@@ -2039,7 +2040,7 @@ let mpState = {
 
 async function deleteRoomRecord(){
   const code = mpState.roomCode;
-  if(!code) return;
+  if(!code || !mpState.isHost) return;      // joiners must not delete the host's room
   try {
     if(mpState.useDb){
       await ensureRoomsTable();
@@ -2058,7 +2059,7 @@ async function deleteRoomRecord(){
 // Leave/Back/Menu actions still use deleteRoomRecord() above and await it.
 function deleteRoomRecordOnUnload(){
   const code = mpState.roomCode;
-  if(!code || !mpState.useDb) return;
+  if(!code || !mpState.useDb || !mpState.isHost) return;
   try {
     fetch(LB_PROXY, {
       method: 'POST',
@@ -2433,19 +2434,22 @@ const sqlStr = v => "'" + String(v ?? '').replace(/\0/g,'').replace(/\\/g,'').re
 let dbTableReady = false;
 async function ensureRoomsTable(){
   if(dbTableReady) return;
+  // The table only needs creating once; remember that so we don't spend an API call every session.
+  try { if(localStorage.getItem('graphwar_table_ok') === '1'){ dbTableReady = true; return; } } catch(e){}
   await dbQuery('CREATE TABLE IF NOT EXISTS ' + LB_TABLE +
     ' (code VARCHAR(8) PRIMARY KEY, peer_id TEXT, host TEXT, created BIGINT, players TEXT)');
   dbTableReady = true;
+  try { localStorage.setItem('graphwar_table_ok', '1'); } catch(e){}
 }
 
+// No network call here: the first real room action (list/create/join) will use the database,
+// and if that fails it falls back to local rooms on its own.
+let dbTested = false;
 async function testDbConnection(){
-  dbTableReady = false;
-  setMpStatus('🔄 Testing Layerbase connection...', false);
+  if(dbTested && mpState.useDb) return true;
   try {
-    await dbQuery('SELECT 1');
-    await ensureRoomsTable();
-    mpState.useDb = true;
-    setMpStatus('✓ Layerbase connected — rooms will sync live', false);
+    mpState.useDb = true; dbTested = true;
+    setMpStatus('✓ Multiplayer database ready', false);
     return true;
   } catch(e){
     mpState.useDb = false;
@@ -2486,6 +2490,7 @@ function saveRoomToLocalStorage(room){
 }
 
 async function createRoom(){
+  roomListAt = 0;
   const room = {
     code: mpState.roomCode,
     peerId: mpState.peerId,
@@ -2509,10 +2514,14 @@ async function createRoom(){
   saveRoomToLocalStorage(room);
 }
 
-async function fetchRoomList(){
+let roomListAt = 0;
+async function fetchRoomList(force){
+  // Reuse a recent result instead of hitting the API every time the list opens.
+  if(!force && mpState.useDb && roomListAt && Date.now() - roomListAt < 15000 && Array.isArray(mpState.rooms)) return mpState.rooms;
   if(mpState.useDb){
     try {
       await ensureRoomsTable();
+      roomListAt = Date.now();
       const data = await dbQuery('SELECT code, peer_id, host, created, players FROM ' + LB_TABLE +
         ' WHERE created > ' + (Date.now() - 3600000) + ' ORDER BY created DESC LIMIT 50');
       mpState.rooms = dbRows(data).map(normalizeRoom);
@@ -2568,14 +2577,14 @@ function updateLobbyDisplay(){
   }
 }
 
-async function displayRoomList(){
+async function displayRoomList(force){
   const list = $('mpRoomList');
   const statusEl = $('mpListStatus');
   statusEl.textContent = mpState.useDb ? 'Loading rooms from Layerbase...' : 'Loading local rooms...';
   list.innerHTML = '';
   let rooms = [];
   try {
-    rooms = await fetchRoomList();
+    rooms = await fetchRoomList(force);
   } catch(e){
     console.error(e);
   }
@@ -2641,7 +2650,12 @@ async function displayRoomList(){
     syncDbFieldsFromForm();
     show('mMultiplayerList');
     if(!mpState.useDb){ await testDbConnection(); }
-    displayRoomList();
+    displayRoomList(false);
+  };
+  let lastRefresh = 0;
+  $('mpRefreshRooms').onclick = () => {
+    if(Date.now() - lastRefresh < 5000) return;   // 5s cooldown so nobody spams the API
+    lastRefresh = Date.now(); displayRoomList(true);
   };
   ['mpModSudden','mpModBlind','mpModRandom','mpModSpeed'].forEach(id => { const el=$(id); if(el) el.onchange=()=>{ mpState.mods={sudden:$('mpModSudden').checked, blind:$('mpModBlind').checked, random:$('mpModRandom').checked, speed:$('mpModSpeed').checked}; }; });
 
