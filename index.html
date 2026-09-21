@@ -618,6 +618,7 @@ function setupRecordCanvas(){
   // The recording canvas is already at output resolution; keep the game canvas logical-size to avoid a second expensive high-res render.
   setRenderScale(1);
   recordCtx = recordCanvas.getContext('2d', {alpha:false, desynchronized:true});
+  pvFresh = true;
   nextFrameDue = 0;
   composeRecordingFrame(performance.now());
 }
@@ -777,11 +778,14 @@ function wrapCanvasText(c, text, maxW){
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
-let pvSmall = null, pvMid = null;
+let pvSmall = null, pvMid = null, pvFresh = true;
 function pvBackdrop(c, rw, rh){
   if (!pvSmall){ pvSmall = document.createElement('canvas'); pvSmall.width = 27; pvSmall.height = 48; pvMid = document.createElement('canvas'); pvMid.width = 108; pvMid.height = 192; }
   const s = pvSmall.getContext('2d'), sc = Math.max(27 / CW, 48 / CH), dw = CW * sc, dh = CH * sc;
-  s.imageSmoothingEnabled = true; s.drawImage(cv, (27 - dw) / 2, (48 - dh) / 2, dw, dh);
+  // Accumulate slowly instead of redrawing each frame, so the blurred backdrop drifts calmly
+  // and doesn't swim/flicker when the camera pans, zooms or things explode.
+  s.imageSmoothingEnabled = true; s.globalAlpha = pvFresh ? 1 : 0.035; pvFresh = false;
+  s.drawImage(cv, (27 - dw) / 2, (48 - dh) / 2, dw, dh); s.globalAlpha = 1;
   const m2 = pvMid.getContext('2d'); m2.imageSmoothingEnabled = true; m2.drawImage(pvSmall, 0, 0, 108, 192);
   c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high'; c.drawImage(pvMid, 0, 0, rw, rh);
   c.fillStyle = 'rgba(12,22,14,.66)'; c.fillRect(0, 0, rw, rh);
@@ -820,6 +824,18 @@ function composePortraitScene(t){
   const bfY = 230, bfH = Math.round(rw * CH / CW);
   c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
   c.drawImage(cv, 0, bfY, rw, bfH);
+  // cinematic grade: soft vignette + slight warm/contrast tint, clipped to the battlefield
+  c.save(); c.beginPath(); c.rect(0, bfY, rw, bfH); c.clip();
+  const vg = c.createRadialGradient(rw / 2, bfY + bfH / 2, bfH * .45, rw / 2, bfY + bfH / 2, rw * .78);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.45)');
+  c.fillStyle = vg; c.fillRect(0, bfY, rw, bfH);
+  c.globalCompositeOperation = 'soft-light'; c.fillStyle = 'rgba(255,170,80,.16)'; c.fillRect(0, bfY, rw, bfH);
+  c.restore();
+  // glow bleeding onto the blurred backdrop, then thin letterbox edges
+  const gl = c.createLinearGradient(0, bfY - 26, 0, bfY); gl.addColorStop(0, 'rgba(247,162,27,0)'); gl.addColorStop(1, 'rgba(247,162,27,.18)');
+  c.fillStyle = gl; c.fillRect(0, bfY - 26, rw, 26);
+  const gl2 = c.createLinearGradient(0, bfY + bfH, 0, bfY + bfH + 26); gl2.addColorStop(0, 'rgba(247,162,27,.18)'); gl2.addColorStop(1, 'rgba(247,162,27,0)');
+  c.fillStyle = gl2; c.fillRect(0, bfY + bfH, rw, 26);
   c.fillStyle = 'rgba(0,0,0,.7)'; c.fillRect(0, bfY - 2, rw, 2); c.fillRect(0, bfY + bfH, rw, 2);
 
   // who is shooting + their equation
@@ -984,7 +1000,7 @@ function cameraTarget(){
   if (!videoMode || !battle || state === 'over') return {x:CW/2,y:CH/2,z:1};
   // Portrait export shows the whole battlefield at all times (text lives in the panel below it),
   // so the camera never zooms in and nothing can fall outside the frame.
-  if (recordCanvas && recordCanvas.height > recordCanvas.width) return {x:CW/2,y:CH/2,z:1};
+  // (Portrait now uses the same cinematic camera as landscape: follows the shot, pushes in on the shooter.)
   if (shot && shot.path.length && (state === 'anim' || state === 'wait')){
     const lead = Math.max(0, Math.min(shot.path.length - 1, Math.floor(shot.i) - 1));
     const isSwarm = shot.shooter && shot.shooter.kind === 'swarm';
