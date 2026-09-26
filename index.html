@@ -261,6 +261,7 @@ textarea.mp-input{resize:vertical;font-family:inherit}
 
     <div id="ytUploadCard" class="mcard hide">
       <p class="mh">Video details</p>
+      <button type="button" class="mbtn ghost" id="ytGenerateBtn" style="margin-bottom:8px">🎲 Generate title &amp; description</button>
       <div class="ytfield"><span class="lb">Title</span><input type="text" id="ytTitle" class="mp-input" maxlength="100" value="Graphwar battle"></div>
       <div class="ytfield"><span class="lb">Description</span><textarea id="ytDesc" class="mp-input" rows="3">Recorded with Graphwar.</textarea></div>
       <div class="mrow"><span class="lb">Privacy</span>
@@ -703,6 +704,7 @@ function resetVideoExport(){
   SFX.closeTap();
   if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
   videoBlob = null;
+  delete $('ytTitle').dataset.userEdited;
   const ev = $('exportVideo'); ev.classList.remove('show', 'busy'); ev.removeAttribute('href'); $('recBadge').classList.remove('on');
   const yb = $('postYoutube'); yb.classList.remove('show', 'busy');
 }
@@ -3005,7 +3007,10 @@ $('mMpCreateRoom').onclick = async () => {
     $('ytClientId').value = localStorage.getItem(YT_CLIENT_ID_KEY) || '';
     $('ytSaveStatus').textContent = '';
     $('ytUploadCard').classList.toggle('hide', !showUpload);
-    if (showUpload) $('ytUploadStatus').textContent = '';
+    if (showUpload){
+      $('ytUploadStatus').textContent = '';
+      if (!$('ytTitle').dataset.userEdited) ytGenerateMeta();
+    }
     $('ytQueueCount').textContent = ytQueue.length;
     $('ytModal').classList.remove('hide');
   }
@@ -3082,6 +3087,51 @@ $('mMpCreateRoom').onclick = async () => {
     }
   }
   $('ytUploadBtn').onclick = ytStartUpload;
+
+  /* ---------- YouTube title/description generator ---------- */
+  function ytGuessWinnerName(resultText){
+    if (typeof BOTS === 'undefined' || !resultText) return null;
+    for (const k in BOTS){
+      if (BOTS[k] && BOTS[k].name && resultText.indexOf(BOTS[k].name) !== -1) return BOTS[k].name;
+    }
+    return null;
+  }
+  function ytGenerateMeta(){
+    const resultText = ($('overtxt').textContent || '').trim();
+    const winnerName = ytGuessWinnerName(resultText);
+    const roster = (typeof seriesKinds !== 'undefined' && seriesKinds.length && typeof rosterLine === 'function') ? rosterLine() : '';
+    const emojis = ['🎯','⚡','🔥','🧠','📈','💥','🏆','🚀'];
+    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+
+    const titleOptions = winnerName ? [
+      winnerName + ' Wins! ' + emoji + ' Graphwar Bot Battle',
+      emoji + ' ' + winnerName + ' Takes the Win — Graphwar Showdown',
+      winnerName + ' WINS?! Insane Graphwar Battle ' + emoji
+    ] : [
+      (resultText || 'Graphwar Battle') + ' ' + emoji,
+      emoji + ' Epic Graphwar Bot Battle'
+    ];
+    let title = titleOptions[Math.floor(Math.random() * titleOptions.length)];
+    if (title.length > 100) title = title.slice(0, 97) + '...';
+
+    const introLine = winnerName
+      ? winnerName + ' pulls off the win in this Graphwar bot battle!'
+      : (resultText ? resultText + ' in this Graphwar bot battle!' : 'Another chaotic Graphwar bot battle!');
+    const rosterLineText = roster ? 'Bots in this one: ' + roster + '.' : '';
+    const hashtags = ['#Graphwarz', '#GraphWar', '#MathBattle', '#BotBattle', '#Gaming', '#Shorts'];
+    if (winnerName) hashtags.splice(1, 0, '#' + winnerName.replace(/[^a-zA-Z0-9]/g, ''));
+
+    const desc = [introLine, rosterLineText].filter(Boolean).join(' ') + '\n\n' +
+      'Every shot fired is a real math equation - watch the bots calculate their way to victory.\n\n' +
+      'Which bot should win next? Drop it in the comments \u{1F447}\n\n' +
+      hashtags.join(' ');
+
+    $('ytTitle').value = title;
+    $('ytDesc').value = desc;
+    $('ytUploadStatus').textContent = '\u2713 Generated from this battle\u2019s result - tweak it however you like.';
+  }
+  $('ytGenerateBtn').onclick = ytGenerateMeta;
+  $('ytTitle').oninput = () => { $('ytTitle').dataset.userEdited = '1'; };
 
   /* ---------- YouTube batch queue ---------- */
   $('ytAddQueueBtn').onclick = () => {
