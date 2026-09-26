@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Graphwar</title>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script type="module">
 // Loads Mediabunny (https://mediabunny.dev), the WebCodecs MP4 muxer used for video export.
 // Tries several CDNs; the game waits on window.MBReady before starting a recording.
@@ -103,6 +104,23 @@ canvas{display:block;width:100%;height:auto}
 #exportVideo.show{display:block}
 #exportVideo.busy{pointer-events:none;opacity:.75}
 @keyframes recPulse{50%{opacity:.35}}
+#postYoutube{display:none;max-width:260px;text-align:center;text-decoration:none}
+#postYoutube.show{display:block}
+#postYoutube.busy{pointer-events:none;opacity:.75}
+.yt-btn{background:linear-gradient(#ff5252,#c62828)!important;color:#fff!important;border-color:#7a1414!important}
+.yt-btn:active{background:linear-gradient(#c62828,#ff5252)!important}
+
+/* ---------- YouTube settings/upload modal ---------- */
+#ytModal{position:fixed;inset:0;z-index:6000;background:linear-gradient(160deg,#0f2418,#2c4a2a 55%,#16301d);color:#eef7ea;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:22px 14px 40px}
+#ytModal.hide{display:none!important}
+.ytwrap{width:100%;max-width:520px}
+.ytwrap .mhint{color:#c3d8bd}
+.ytwrap ol{font-size:.85rem;color:#dfe8db;line-height:1.6;padding-left:20px;margin:6px 0}
+.ytwrap ol li{margin-bottom:6px}
+.ytwrap code{background:rgba(0,0,0,.35);padding:1px 5px;border-radius:4px;font-size:.82rem}
+.ytfield{display:flex;flex-direction:column;align-items:stretch;gap:4px;margin:10px 0}
+.ytfield .lb{font-size:.92rem}
+textarea.mp-input{resize:vertical;font-family:inherit}
 
 /* ---------- multiplayer menu styles ---------- */
 .mp-input{width:100%;padding:10px;margin:8px 0;border:1px solid #0f2418;border-radius:6px;background:#eef3ec;color:#0f2418;font-size:1rem}
@@ -146,6 +164,7 @@ canvas{display:block;width:100%;height:auto}
         <div class="mhint">How fast the bots think, type and shoot.</div>
         <div class="mrow"><span class="lb">Rounds</span><select id="battleRounds"><option value="1" selected>1 round</option><option value="3">3 rounds</option><option value="5">5 rounds</option><option value="7">7 rounds</option></select></div>
         <label class="video-toggle"><input type="checkbox" id="videoMode"><span><b>Video mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Calm cinematic camera and MP4 export after the battle</small></span></label>
+        <button type="button" class="mbtn ghost" id="ytSettingsBtn" style="font-size:.85rem;padding:8px 12px;margin:6px 0 2px">🔧 YouTube upload settings</button>
         <label class="video-toggle"><input type="checkbox" id="highlightCards" checked><span><b>Highlight reel cards</b><small style="display:block;color:#a9c7a2;font-weight:normal">Add a battle title and winner card to the export</small></span></label>
         <label class="video-toggle"><input type="checkbox" id="directorMode" checked><span><b>Director mode</b><small style="display:block;color:#a9c7a2;font-weight:normal">Mix battlefield wide shots with action close-ups</small></span></label>
         <label class="video-toggle"><input type="checkbox" id="voiceOver"><span><b>Bot voice-over</b><small style="display:block;color:#a9c7a2;font-weight:normal">Bots speak their dialogue with expressive voices while the battle plays</small></span></label>
@@ -225,6 +244,48 @@ canvas{display:block;width:100%;height:auto}
   </div>
 </div>
 
+<div id="ytModal" class="hide">
+  <div class="ytwrap">
+    <button type="button" id="ytClose" class="mbtn ghost" style="max-width:120px;margin-bottom:10px">✕ Close</button>
+    <div class="mtitle" style="font-size:1.6rem">Post to YouTube</div>
+    <div class="msub">Upload straight from your browser, using your own Google account</div>
+
+    <div id="ytUploadCard" class="mcard hide">
+      <p class="mh">Video details</p>
+      <div class="ytfield"><span class="lb">Title</span><input type="text" id="ytTitle" class="mp-input" maxlength="100" value="Graphwar battle"></div>
+      <div class="ytfield"><span class="lb">Description</span><textarea id="ytDesc" class="mp-input" rows="3">Recorded with Graphwar.</textarea></div>
+      <div class="mrow"><span class="lb">Privacy</span>
+        <select id="ytPrivacy">
+          <option value="unlisted" selected>Unlisted</option>
+          <option value="public">Public</option>
+          <option value="private">Private</option>
+        </select>
+      </div>
+      <button type="button" class="mbtn yt-btn" id="ytUploadBtn">⬆ Upload to YouTube</button>
+      <div class="mp-status" id="ytUploadStatus"></div>
+    </div>
+
+    <div class="mcard">
+      <p class="mh">YouTube API setup</p>
+      <div class="mhint">Uploading uses your own Google Cloud OAuth Client ID, entered below and saved only in this browser (localStorage). Graphwar's code never sees your Google password, and nobody but you can upload with this Client ID unless they also sign in to your Google account.</div>
+      <div class="ytfield"><span class="lb">OAuth Client ID</span><input type="text" id="ytClientId" class="mp-input" placeholder="xxxxxxxxxx.apps.googleusercontent.com"></div>
+      <button type="button" class="mbtn ghost" id="ytSaveClientId">Save Client ID</button>
+      <div class="mp-status" id="ytSaveStatus"></div>
+
+      <p class="mh" style="margin-top:18px">How to get a Client ID (free, ~5 minutes)</p>
+      <ol>
+        <li>Go to <b>console.cloud.google.com</b> and sign in, then create a new project (or pick an existing one) from the project dropdown at the top.</li>
+        <li>Open the left menu → <b>APIs &amp; Services → Library</b>, search for <b>YouTube Data API v3</b>, and click <b>Enable</b>.</li>
+        <li>Open <b>APIs &amp; Services → OAuth consent screen</b>. Choose <b>External</b>, fill in an app name and your email, and save. Under <b>Audience → Test users</b>, add the Gmail address of the YouTube channel you'll upload to (while the app is unpublished, only test users can sign in).</li>
+        <li>Open <b>APIs &amp; Services → Credentials → Create Credentials → OAuth client ID</b>. For application type choose <b>Web application</b>.</li>
+        <li>Under <b>Authorized JavaScript origins</b>, add the exact web address this page is hosted at (e.g. <code>https://yourdomain.com</code>). Google OAuth needs a real <code>https://</code> or <code>http://localhost</code> address — it won't authorize a page opened directly from a downloaded file.</li>
+        <li>Click <b>Create</b>, then copy the <b>Client ID</b> shown (it ends in <code>.apps.googleusercontent.com</code>) and paste it into the field above, then tap <b>Save Client ID</b>.</li>
+      </ol>
+      <div class="mhint">No API key or client secret is needed here — the Client ID plus your Google sign-in is enough to upload videos to your own channel.</div>
+    </div>
+  </div>
+</div>
+
 <div id="app">
   <div class="bar">
     <label>Mode <select id="mode"><option value="classic">You vs bots</option><option value="battle">Bot battle (watch)</option><option value="multiplayer">Online multiplayer</option></select></label>
@@ -245,7 +306,7 @@ canvas{display:block;width:100%;height:auto}
     <canvas id="cv"></canvas>
     <div id="recBadge">REC</div>
     <button id="fsExit">✕ Exit fullscreen</button>
-    <div id="over"><div id="overtxt"></div><a id="exportVideo" class="mbtn" download="graphwar-battle.mp4">⬇ Export video</a><button id="again" style="font-size:1.2rem">Play again</button><button id="toMenu" class="mbtn ghost">Main menu</button></div>
+    <div id="over"><div id="overtxt"></div><a id="exportVideo" class="mbtn" download="graphwar-battle.mp4">⬇ Export video</a><button type="button" id="postYoutube" class="mbtn yt-btn">▶ Post to YouTube</button><button id="again" style="font-size:1.2rem">Play again</button><button id="toMenu" class="mbtn ghost">Main menu</button></div>
   </div>
   <div id="msg"></div>
   <div id="feed" class="hide"></div>
@@ -408,7 +469,7 @@ let roundPending = false; // true between round setup and the first turn (intro 
 let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [], preview = null;
 let auto = false, gameId = 0, botBusy = false;
 let battle = false, speed = 1, stall = 0, feedList = [], portraitLogList = [];
-let videoMode = false, directorMode = true, highlightCards = true, voiceOver = false, recorder = null, recordedChunks = [], videoUrl = null, finishRecordingTimer = null;
+let videoMode = false, directorMode = true, highlightCards = true, voiceOver = false, recorder = null, recordedChunks = [], videoUrl = null, videoBlob = null, finishRecordingTimer = null;
 let recordCanvas = null, recordCtx = null, recordOutputCtx = null, recordFrameCanvas = null, recordSceneCanvas = null, recordSceneCtx = null, videoOrientation = 'landscape';
 let recordStream = null, recordTrack = null, recordMime = '';
 let recordingMode = null, mbOutput = null, mbVideoSource = null, mbAudioSource = null, mbRecordStart = 0;
@@ -603,17 +664,22 @@ function resetVideoExport(){
   recordCanvas = null; recordCtx = null; recordOutputCtx = null; recordFrameCanvas = null; recordSceneCanvas = null; recordSceneCtx = null; nextFrameDue = 0; setRenderScale(1);
   SFX.closeTap();
   if (videoUrl){ URL.revokeObjectURL(videoUrl); videoUrl = null; }
+  videoBlob = null;
   const ev = $('exportVideo'); ev.classList.remove('show', 'busy'); ev.removeAttribute('href'); $('recBadge').classList.remove('on');
+  const yb = $('postYoutube'); yb.classList.remove('show', 'busy');
 }
 function exportBusy(text){ const ev = $('exportVideo'); ev.removeAttribute('href'); ev.textContent = text; ev.classList.add('show', 'busy'); }
-function exportReady(url, ext){
-  videoUrl = url; const ev = $('exportVideo');
+function exportReady(url, ext, blob){
+  videoUrl = url; videoBlob = blob || null; const ev = $('exportVideo');
   ev.href = url; ev.download = 'graphwar-battle-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.' + ext;
   const label = {avc:'H.264',vp9:'VP9',av1:'AV1',hevc:'H.265'};
   ev.textContent = '\u2b07 Export video (' + ext.toUpperCase() + (recordingMode === 'legacy' ? ' \u00b7 basic recorder' : (mbVCodec && ext === 'mp4' ? ' \u00b7 ' + (label[mbVCodec] || mbVCodec) : '')) + ')'; ev.classList.remove('busy'); ev.classList.add('show');
+  const yb = $('postYoutube');
+  if (videoBlob){ yb.classList.add('show'); yb.classList.remove('busy'); } else { yb.classList.remove('show'); }
 }
 function exportFailed(){
   const ev = $('exportVideo'); ev.removeAttribute('href'); ev.textContent = 'Video export failed'; ev.classList.remove('busy'); ev.classList.add('show');
+  $('postYoutube').classList.remove('show');
 }
 function setupRecordCanvas(){
   videoOrientation = $('videoOrientation').value;
@@ -762,7 +828,7 @@ function startVideoRecordingLegacy(){
       setRenderScale(1); $('recBadge').classList.remove('on'); setExporting(false);
       if (!chunks.length){ exportFailed(); return; }
       const mime = rec.mimeType || recordMime;
-      exportReady(URL.createObjectURL(new Blob(chunks, {type: mime})), mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm');
+      { const b = new Blob(chunks, {type: mime}); exportReady(URL.createObjectURL(b), mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm', b); }
     };
     rec.start(); recordingMode = 'legacy'; mbRecordStart = performance.now(); $('recBadge').textContent = 'REC (basic recorder)'; $('recBadge').classList.add('on');
   } catch(e){ recorder = null; SFX.closeTap(); setMsg('This browser could not start video recording.', true); }
@@ -1073,7 +1139,7 @@ async function finalizeRecording(){
       if (sid !== recSession) return;
       const buf = output.target.buffer;
       if (!buf || !buf.byteLength) throw new Error('empty file');
-      exportReady(URL.createObjectURL(new Blob([buf], {type: 'video/mp4'})), 'mp4');
+      { const b = new Blob([buf], {type: 'video/mp4'}); exportReady(URL.createObjectURL(b), 'mp4', b); }
     } catch(e){
       console.error(e);
       if (sid === recSession){ exportFailed(); setMsg('Video export failed: ' + (e && e.message || e), true); }
@@ -2894,6 +2960,82 @@ $('mMpCreateRoom').onclick = async () => {
     setSpeed($('sSpeed2').value);
     closeMenu(); startGame();
   };
+
+  /* ---------- YouTube post ---------- */
+  const YT_CLIENT_ID_KEY = 'graphwar_yt_client_id';
+  function openYtModal(showUpload){
+    $('ytClientId').value = localStorage.getItem(YT_CLIENT_ID_KEY) || '';
+    $('ytSaveStatus').textContent = '';
+    $('ytUploadCard').classList.toggle('hide', !showUpload);
+    if (showUpload) $('ytUploadStatus').textContent = '';
+    $('ytModal').classList.remove('hide');
+  }
+  function closeYtModal(){ $('ytModal').classList.add('hide'); }
+  $('ytSettingsBtn').onclick = () => openYtModal(false);
+  $('postYoutube').onclick = () => openYtModal(true);
+  $('ytClose').onclick = closeYtModal;
+  $('ytSaveClientId').onclick = () => {
+    const v = $('ytClientId').value.trim();
+    if (!v){ $('ytSaveStatus').textContent = 'Enter a Client ID first.'; return; }
+    localStorage.setItem(YT_CLIENT_ID_KEY, v);
+    $('ytSaveStatus').textContent = '\u2713 Saved in this browser.';
+  };
+  async function ytStartUpload(){
+    const statusEl = $('ytUploadStatus');
+    const clientId = localStorage.getItem(YT_CLIENT_ID_KEY) || $('ytClientId').value.trim();
+    if (!clientId){ statusEl.textContent = 'Add your OAuth Client ID below and save it first.'; return; }
+    if (!videoBlob){ statusEl.textContent = 'No exported video is ready to upload yet.'; return; }
+    if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2){
+      statusEl.textContent = 'Google sign-in script did not load (check your connection) - try again.'; return;
+    }
+    const btn = $('ytUploadBtn'); btn.disabled = true;
+    statusEl.textContent = 'Opening Google sign-in\u2026';
+    try {
+      const accessToken = await new Promise((resolve, reject) => {
+        try {
+          const client = google.accounts.oauth2.initTokenClient({
+            client_id: clientId,
+            scope: 'https://www.googleapis.com/auth/youtube.upload',
+            callback: (resp) => { if (resp && resp.access_token) resolve(resp.access_token); else reject(new Error((resp && resp.error) || 'Sign-in was not completed.')); },
+            error_callback: (err) => reject(new Error((err && err.type) || 'Sign-in failed.'))
+          });
+          client.requestAccessToken();
+        } catch(e){ reject(e); }
+      });
+      statusEl.textContent = 'Starting upload\u2026';
+      const metadata = {
+        snippet: { title: ($('ytTitle').value || 'Graphwar battle').slice(0,100), description: $('ytDesc').value || '' },
+        status: { privacyStatus: $('ytPrivacy').value || 'unlisted' }
+      };
+      const initRes = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json',
+          'X-Upload-Content-Type': videoBlob.type || 'video/mp4',
+          'X-Upload-Content-Length': String(videoBlob.size)
+        },
+        body: JSON.stringify(metadata)
+      });
+      if (!initRes.ok){ const t = await initRes.text().catch(()=> ''); throw new Error('Could not start upload (HTTP ' + initRes.status + '). ' + t.slice(0,200)); }
+      const uploadUrl = initRes.headers.get('Location');
+      if (!uploadUrl) throw new Error('YouTube did not return an upload address.');
+      statusEl.textContent = 'Uploading\u2026 this can take a while for longer videos, please keep this tab open.';
+      const uploadRes = await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': videoBlob.type || 'video/mp4' }, body: videoBlob });
+      if (!uploadRes.ok){ const t = await uploadRes.text().catch(()=> ''); throw new Error('Upload failed (HTTP ' + uploadRes.status + '). ' + t.slice(0,200)); }
+      const data = await uploadRes.json().catch(() => null);
+      const vid = data && data.id;
+      statusEl.innerHTML = vid
+        ? ('\u2713 Uploaded! <a href="https://youtu.be/' + vid + '" target="_blank" rel="noopener" style="color:#f7a21b">Watch it on YouTube</a>')
+        : 'Upload finished, but YouTube did not send back a video link.';
+    } catch(e){
+      console.warn('YouTube upload failed', e);
+      statusEl.textContent = 'Upload failed: ' + ((e && e.message) || 'unknown error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $('ytUploadBtn').onclick = ytStartUpload;
 
   $('menuBtn').onclick = openMenu;
   $('toMenu').onclick = async () => { $('over').style.display = 'none'; gameId++; if(mpState.mode === 'multiplayer' || mpState.roomCode) await leaveMultiplayerRoom(); openMenu(); };
