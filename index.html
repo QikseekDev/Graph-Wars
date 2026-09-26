@@ -121,6 +121,14 @@ canvas{display:block;width:100%;height:auto}
 .ytfield{display:flex;flex-direction:column;align-items:stretch;gap:4px;margin:10px 0}
 .ytfield .lb{font-size:.92rem}
 textarea.mp-input{resize:vertical;font-family:inherit}
+#ytQueueModal{position:fixed;inset:0;z-index:6000;background:linear-gradient(160deg,#0f2418,#2c4a2a 55%,#16301d);color:#eef7ea;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:22px 14px 40px}
+#ytQueueModal.hide{display:none!important}
+.ytqitem{border:1px solid #6f9668;border-radius:10px;padding:10px;margin-bottom:10px;background:rgba(255,255,255,.05)}
+.ytqitem .ytqhead{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px;font-size:.8rem;color:#a9c7a2}
+.ytqitem .ytqwhen{font-weight:bold;color:#f7a21b}
+.ytqitem .ytqbtns{display:flex;gap:4px}
+.ytqitem .ytqbtns button{padding:3px 8px;font-size:.85rem;border-radius:6px}
+.ytqitem .ytqstatus{font-size:.8rem;margin-top:6px;color:#dfe8db}
 
 /* ---------- multiplayer menu styles ---------- */
 .mp-input{width:100%;padding:10px;margin:8px 0;border:1px solid #0f2418;border-radius:6px;background:#eef3ec;color:#0f2418;font-size:1rem}
@@ -247,6 +255,7 @@ textarea.mp-input{resize:vertical;font-family:inherit}
 <div id="ytModal" class="hide">
   <div class="ytwrap">
     <button type="button" id="ytClose" class="mbtn ghost" style="max-width:120px;margin-bottom:10px">✕ Close</button>
+    <button type="button" id="ytOpenQueueBtn" class="mbtn ghost" style="max-width:220px;margin-bottom:10px">📋 Batch queue (<span id="ytQueueCount">0</span>)</button>
     <div class="mtitle" style="font-size:1.6rem">Post to YouTube</div>
     <div class="msub">Upload straight from your browser, using your own Google account</div>
 
@@ -261,7 +270,9 @@ textarea.mp-input{resize:vertical;font-family:inherit}
           <option value="private">Private</option>
         </select>
       </div>
-      <button type="button" class="mbtn yt-btn" id="ytUploadBtn">⬆ Upload to YouTube</button>
+      <button type="button" class="mbtn yt-btn" id="ytUploadBtn">⬆ Upload to YouTube now</button>
+      <button type="button" class="mbtn ghost" id="ytAddQueueBtn">➕ Add to scheduled batch instead</button>
+      <div class="mhint">Uploading several videos back-to-back can look like spam to YouTube. Use the batch queue to space them out automatically - it uploads them right away but tells YouTube to reveal each one hours apart.</div>
       <div class="mp-status" id="ytUploadStatus"></div>
     </div>
 
@@ -283,6 +294,32 @@ textarea.mp-input{resize:vertical;font-family:inherit}
       </ol>
       <div class="mhint">No API key or client secret is needed here — the Client ID plus your Google sign-in is enough to upload videos to your own channel.</div>
     </div>
+  </div>
+</div>
+
+<div id="ytQueueModal" class="hide">
+  <div class="ytwrap">
+    <button type="button" id="ytQueueClose" class="mbtn ghost" style="max-width:120px;margin-bottom:10px">✕ Close</button>
+    <div class="mtitle" style="font-size:1.6rem">Batch upload queue</div>
+    <div class="msub">Uploads happen right away; YouTube reveals each video on its own schedule</div>
+
+    <div class="mcard">
+      <p class="mh">Schedule</p>
+      <div class="mrow"><span class="lb">Hours between videos</span><input type="number" id="ytQueueInterval" class="mp-input" style="max-width:100px;text-align:center" min="0" step="0.5" value="3"></div>
+      <label class="video-toggle"><input type="checkbox" id="ytQueueFirstNow" checked><span><b>Publish the first video right away</b><small style="display:block;color:#a9c7a2;font-weight:normal">Uncheck to schedule every video, including the first</small></span></label>
+      <div class="mhint">Each video still uploads immediately when you tap Start; only its public reveal time is spaced out, so YouTube never sees a burst of new videos.</div>
+      <div class="mhint">⚠ The queue lives only in this browser tab. Don't reload or close the page until you've started (and this tab has finished) the batch upload.</div>
+    </div>
+
+    <div class="mcard">
+      <p class="mh">Queued videos</p>
+      <div id="ytQueueList"></div>
+      <div class="mhint" id="ytQueueEmptyHint">No videos queued yet. Record a battle, open Post to YouTube, fill in the details, then tap "Add to scheduled batch instead".</div>
+    </div>
+
+    <button type="button" class="mbtn yt-btn" id="ytQueueStartBtn">🚀 Start batch upload</button>
+    <button type="button" class="mbtn ghost" id="ytQueueClearBtn">Clear queue</button>
+    <div class="mp-status" id="ytQueueStatus"></div>
   </div>
 </div>
 
@@ -470,6 +507,7 @@ let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [],
 let auto = false, gameId = 0, botBusy = false;
 let battle = false, speed = 1, stall = 0, feedList = [], portraitLogList = [];
 let videoMode = false, directorMode = true, highlightCards = true, voiceOver = false, recorder = null, recordedChunks = [], videoUrl = null, videoBlob = null, finishRecordingTimer = null;
+let ytQueue = [];
 let recordCanvas = null, recordCtx = null, recordOutputCtx = null, recordFrameCanvas = null, recordSceneCanvas = null, recordSceneCtx = null, videoOrientation = 'landscape';
 let recordStream = null, recordTrack = null, recordMime = '';
 let recordingMode = null, mbOutput = null, mbVideoSource = null, mbAudioSource = null, mbRecordStart = 0;
@@ -2968,74 +3006,190 @@ $('mMpCreateRoom').onclick = async () => {
     $('ytSaveStatus').textContent = '';
     $('ytUploadCard').classList.toggle('hide', !showUpload);
     if (showUpload) $('ytUploadStatus').textContent = '';
+    $('ytQueueCount').textContent = ytQueue.length;
     $('ytModal').classList.remove('hide');
   }
   function closeYtModal(){ $('ytModal').classList.add('hide'); }
   $('ytSettingsBtn').onclick = () => openYtModal(false);
   $('postYoutube').onclick = () => openYtModal(true);
   $('ytClose').onclick = closeYtModal;
+  $('ytOpenQueueBtn').onclick = () => { closeYtModal(); openYtQueueModal(); };
   $('ytSaveClientId').onclick = () => {
     const v = $('ytClientId').value.trim();
     if (!v){ $('ytSaveStatus').textContent = 'Enter a Client ID first.'; return; }
     localStorage.setItem(YT_CLIENT_ID_KEY, v);
     $('ytSaveStatus').textContent = '\u2713 Saved in this browser.';
   };
+
+  function ytGetAccessToken(clientId){
+    return new Promise((resolve, reject) => {
+      if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2){
+        reject(new Error('Google sign-in script did not load (check your connection) - try again.')); return;
+      }
+      try {
+        const client = google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: 'https://www.googleapis.com/auth/youtube.upload',
+          callback: (resp) => { if (resp && resp.access_token) resolve(resp.access_token); else reject(new Error((resp && resp.error) || 'Sign-in was not completed.')); },
+          error_callback: (err) => reject(new Error((err && err.type) || 'Sign-in failed.'))
+        });
+        client.requestAccessToken();
+      } catch(e){ reject(e); }
+    });
+  }
+  async function ytUploadOne(blob, metadata, accessToken, onProgressText){
+    if (onProgressText) onProgressText('Starting upload\u2026');
+    const initRes = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken,
+        'Content-Type': 'application/json',
+        'X-Upload-Content-Type': blob.type || 'video/mp4',
+        'X-Upload-Content-Length': String(blob.size)
+      },
+      body: JSON.stringify(metadata)
+    });
+    if (!initRes.ok){ const t = await initRes.text().catch(()=> ''); throw new Error('Could not start upload (HTTP ' + initRes.status + '). ' + t.slice(0,200)); }
+    const uploadUrl = initRes.headers.get('Location');
+    if (!uploadUrl) throw new Error('YouTube did not return an upload address.');
+    if (onProgressText) onProgressText('Uploading\u2026 this can take a while for longer videos, please keep this tab open.');
+    const uploadRes = await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': blob.type || 'video/mp4' }, body: blob });
+    if (!uploadRes.ok){ const t = await uploadRes.text().catch(()=> ''); throw new Error('Upload failed (HTTP ' + uploadRes.status + '). ' + t.slice(0,200)); }
+    const data = await uploadRes.json().catch(() => null);
+    if (!data || !data.id) throw new Error('Upload finished, but YouTube did not send back a video link.');
+    return data.id;
+  }
   async function ytStartUpload(){
     const statusEl = $('ytUploadStatus');
     const clientId = localStorage.getItem(YT_CLIENT_ID_KEY) || $('ytClientId').value.trim();
     if (!clientId){ statusEl.textContent = 'Add your OAuth Client ID below and save it first.'; return; }
     if (!videoBlob){ statusEl.textContent = 'No exported video is ready to upload yet.'; return; }
-    if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2){
-      statusEl.textContent = 'Google sign-in script did not load (check your connection) - try again.'; return;
-    }
-    const btn = $('ytUploadBtn'); btn.disabled = true;
+    const btn = $('ytUploadBtn'); btn.disabled = true; $('ytAddQueueBtn').disabled = true;
     statusEl.textContent = 'Opening Google sign-in\u2026';
     try {
-      const accessToken = await new Promise((resolve, reject) => {
-        try {
-          const client = google.accounts.oauth2.initTokenClient({
-            client_id: clientId,
-            scope: 'https://www.googleapis.com/auth/youtube.upload',
-            callback: (resp) => { if (resp && resp.access_token) resolve(resp.access_token); else reject(new Error((resp && resp.error) || 'Sign-in was not completed.')); },
-            error_callback: (err) => reject(new Error((err && err.type) || 'Sign-in failed.'))
-          });
-          client.requestAccessToken();
-        } catch(e){ reject(e); }
-      });
-      statusEl.textContent = 'Starting upload\u2026';
+      const accessToken = await ytGetAccessToken(clientId);
       const metadata = {
         snippet: { title: ($('ytTitle').value || 'Graphwar battle').slice(0,100), description: $('ytDesc').value || '' },
         status: { privacyStatus: $('ytPrivacy').value || 'unlisted' }
       };
-      const initRes = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + accessToken,
-          'Content-Type': 'application/json',
-          'X-Upload-Content-Type': videoBlob.type || 'video/mp4',
-          'X-Upload-Content-Length': String(videoBlob.size)
-        },
-        body: JSON.stringify(metadata)
-      });
-      if (!initRes.ok){ const t = await initRes.text().catch(()=> ''); throw new Error('Could not start upload (HTTP ' + initRes.status + '). ' + t.slice(0,200)); }
-      const uploadUrl = initRes.headers.get('Location');
-      if (!uploadUrl) throw new Error('YouTube did not return an upload address.');
-      statusEl.textContent = 'Uploading\u2026 this can take a while for longer videos, please keep this tab open.';
-      const uploadRes = await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': videoBlob.type || 'video/mp4' }, body: videoBlob });
-      if (!uploadRes.ok){ const t = await uploadRes.text().catch(()=> ''); throw new Error('Upload failed (HTTP ' + uploadRes.status + '). ' + t.slice(0,200)); }
-      const data = await uploadRes.json().catch(() => null);
-      const vid = data && data.id;
-      statusEl.innerHTML = vid
-        ? ('\u2713 Uploaded! <a href="https://youtu.be/' + vid + '" target="_blank" rel="noopener" style="color:#f7a21b">Watch it on YouTube</a>')
-        : 'Upload finished, but YouTube did not send back a video link.';
+      const vid = await ytUploadOne(videoBlob, metadata, accessToken, t => statusEl.textContent = t);
+      statusEl.innerHTML = '\u2713 Uploaded! <a href="https://youtu.be/' + vid + '" target="_blank" rel="noopener" style="color:#f7a21b">Watch it on YouTube</a>';
     } catch(e){
       console.warn('YouTube upload failed', e);
       statusEl.textContent = 'Upload failed: ' + ((e && e.message) || 'unknown error');
     } finally {
-      btn.disabled = false;
+      btn.disabled = false; $('ytAddQueueBtn').disabled = false;
     }
   }
   $('ytUploadBtn').onclick = ytStartUpload;
+
+  /* ---------- YouTube batch queue ---------- */
+  $('ytAddQueueBtn').onclick = () => {
+    if (!videoBlob){ $('ytUploadStatus').textContent = 'No exported video is ready to add yet.'; return; }
+    ytQueue.push({
+      id: 'q' + Date.now() + Math.random().toString(36).slice(2,7),
+      blob: videoBlob,
+      title: ($('ytTitle').value || 'Graphwar battle').slice(0,100),
+      desc: $('ytDesc').value || '',
+      privacy: $('ytPrivacy').value || 'unlisted',
+      status: 'queued'
+    });
+    $('ytQueueCount').textContent = ytQueue.length;
+    $('ytUploadStatus').textContent = '\u2713 Added to the batch queue (' + ytQueue.length + ' video' + (ytQueue.length===1?'':'s') + ' queued).';
+  };
+
+  function ytComputeSchedule(){
+    const interval = Math.max(0, +$('ytQueueInterval').value || 0);
+    const firstNow = $('ytQueueFirstNow').checked;
+    const now = Date.now();
+    return ytQueue.map((item, i) => {
+      if (firstNow && i === 0) return null;
+      const slot = firstNow ? i : (i + 1);
+      return new Date(now + slot * interval * 3600000);
+    });
+  }
+  function renderYtQueue(){
+    const list = $('ytQueueList');
+    $('ytQueueEmptyHint').classList.toggle('hide', ytQueue.length > 0);
+    const schedule = ytComputeSchedule();
+    list.innerHTML = '';
+    ytQueue.forEach((item, i) => {
+      const when = schedule[i] ? ('Goes public \u2248 ' + schedule[i].toLocaleString()) : 'Publishes immediately when uploaded';
+      const div = document.createElement('div');
+      div.className = 'ytqitem';
+      div.innerHTML =
+        '<div class="ytqhead"><span>#' + (i+1) + ' \u00b7 <span class="ytqwhen"></span></span>' +
+          '<span class="ytqbtns">' +
+            '<button type="button" class="mbtn ghost" data-act="up">\u2191</button>' +
+            '<button type="button" class="mbtn ghost" data-act="down">\u2193</button>' +
+            '<button type="button" class="mbtn ghost" data-act="rm">\u2715</button>' +
+          '</span></div>' +
+        '<div class="ytfield" style="margin:6px 0"><span class="lb">Title</span><input type="text" class="mp-input" data-f="title" maxlength="100"></div>' +
+        '<div class="ytfield" style="margin:6px 0"><span class="lb">Description</span><textarea class="mp-input" rows="2" data-f="desc"></textarea></div>' +
+        '<div class="ytqstatus" data-role="status"></div>';
+      div.querySelector('.ytqwhen').textContent = when;
+      div.querySelector('[data-f="title"]').value = item.title;
+      div.querySelector('[data-f="desc"]').value = item.desc;
+      div.querySelector('[data-f="title"]').oninput = e => item.title = e.target.value;
+      div.querySelector('[data-f="desc"]').oninput = e => item.desc = e.target.value;
+      div.querySelector('[data-act="up"]').onclick = () => { if (i>0){ [ytQueue[i-1],ytQueue[i]]=[ytQueue[i],ytQueue[i-1]]; renderYtQueue(); } };
+      div.querySelector('[data-act="down"]').onclick = () => { if (i<ytQueue.length-1){ [ytQueue[i+1],ytQueue[i]]=[ytQueue[i],ytQueue[i+1]]; renderYtQueue(); } };
+      div.querySelector('[data-act="rm"]').onclick = () => { ytQueue.splice(i,1); renderYtQueue(); $('ytQueueCount').textContent = ytQueue.length; };
+      const st = div.querySelector('[data-role="status"]');
+      if (item.status === 'done') st.textContent = '\u2713 Uploaded' + (item.videoId ? (' \u00b7 ' ) : '');
+      if (item.status === 'done' && item.videoId){ st.innerHTML = '\u2713 Uploaded \u00b7 <a href="https://youtu.be/'+item.videoId+'" target="_blank" rel="noopener" style="color:#f7a21b">watch</a>'; }
+      if (item.status === 'error') st.textContent = '\u2717 Failed: ' + (item.error || 'unknown error');
+      if (item.status === 'uploading') st.textContent = '\u2b06 Uploading\u2026';
+      if (item.status === 'done' || item.status === 'uploading'){
+        div.querySelectorAll('input,textarea,button[data-act]').forEach(el => el.disabled = true);
+      }
+      list.appendChild(div);
+    });
+  }
+  function openYtQueueModal(){ $('ytQueueStatus').textContent = ''; renderYtQueue(); $('ytQueueModal').classList.remove('hide'); }
+  function closeYtQueueModal(){ $('ytQueueModal').classList.add('hide'); }
+  $('ytQueueClose').onclick = closeYtQueueModal;
+  $('ytQueueInterval').oninput = renderYtQueue;
+  $('ytQueueFirstNow').onchange = renderYtQueue;
+  $('ytQueueClearBtn').onclick = () => {
+    if (ytQueue.some(i => i.status === 'uploading')) return;
+    if (ytQueue.length && !confirm('Clear all ' + ytQueue.length + ' queued videos?')) return;
+    ytQueue = []; $('ytQueueCount').textContent = 0; renderYtQueue();
+  };
+  $('ytQueueStartBtn').onclick = async () => {
+    const clientId = localStorage.getItem(YT_CLIENT_ID_KEY) || '';
+    const statusEl = $('ytQueueStatus');
+    const pending = ytQueue.filter(i => i.status === 'queued' || i.status === 'error');
+    if (!clientId){ statusEl.textContent = 'Add your OAuth Client ID in YouTube upload settings first.'; return; }
+    if (!pending.length){ statusEl.textContent = 'Nothing left to upload.'; return; }
+    $('ytQueueStartBtn').disabled = true; $('ytQueueInterval').disabled = true; $('ytQueueFirstNow').disabled = true;
+    statusEl.textContent = 'Opening Google sign-in\u2026';
+    let accessToken;
+    try { accessToken = await ytGetAccessToken(clientId); }
+    catch(e){ statusEl.textContent = 'Sign-in failed: ' + ((e&&e.message)||'unknown error'); $('ytQueueStartBtn').disabled = false; $('ytQueueInterval').disabled = false; $('ytQueueFirstNow').disabled = false; return; }
+    const schedule = ytComputeSchedule();
+    for (let i = 0; i < ytQueue.length; i++){
+      const item = ytQueue[i];
+      if (item.status === 'done') continue;
+      item.status = 'uploading'; renderYtQueue();
+      statusEl.textContent = 'Uploading video ' + (i+1) + ' of ' + ytQueue.length + '\u2026';
+      try {
+        const publishAt = schedule[i];
+        const metadata = publishAt
+          ? { snippet: { title: item.title, description: item.desc }, status: { privacyStatus: 'private', publishAt: publishAt.toISOString() } }
+          : { snippet: { title: item.title, description: item.desc }, status: { privacyStatus: item.privacy || 'unlisted' } };
+        const vid = await ytUploadOne(item.blob, metadata, accessToken);
+        item.status = 'done'; item.videoId = vid;
+      } catch(e){
+        console.warn('Batch upload failed for item', i, e);
+        item.status = 'error'; item.error = (e && e.message) || 'unknown error';
+      }
+      renderYtQueue();
+    }
+    $('ytQueueStartBtn').disabled = false; $('ytQueueInterval').disabled = false; $('ytQueueFirstNow').disabled = false;
+    const failed = ytQueue.filter(i => i.status === 'error').length;
+    statusEl.textContent = failed ? (failed + ' video(s) failed - fix and tap Start again to retry them.') : '\u2713 Batch upload complete.';
+  };
 
   $('menuBtn').onclick = openMenu;
   $('toMenu').onclick = async () => { $('over').style.display = 'none'; gameId++; if(mpState.mode === 'multiplayer' || mpState.roomCode) await leaveMultiplayerRoom(); openMenu(); };
