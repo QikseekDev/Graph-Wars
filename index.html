@@ -181,6 +181,7 @@ textarea.mp-input{resize:vertical;font-family:inherit}
         <div class="mrow"><span class="lb">Frame rate</span><select id="videoFps"><option value="24">24 fps</option><option value="30" selected>30 fps</option><option value="60">60 fps</option></select></div>
         <div class="mhint">Higher settings look sharper but export slower, and can lag on phones.</div>
         <p class="mh" style="margin-top:16px">Bot teams &amp; soldiers per team</p>
+        <button type="button" class="mbtn ghost" id="randomBotsBtn" style="font-size:.85rem;padding:8px 12px;margin-bottom:8px">🎲 Random bots</button>
         <div id="menuPanel"></div>
         <div class="mhint">Pick at least two teams. Each pick is its own team.</div>
       </div>
@@ -1480,35 +1481,35 @@ function botTurn(){
 
 /* ---------- bot battle mode ---------- */
 const BOTS = {
-  peace:{name:'Peace Bot', color:'#1e88e5', desc:'Stays pacifist until it is the last one fighting, then unleashes its ZigZag skill.'},
-  trick:{name:'Trickshot Bot', color:'#d4a017', desc:'Chains many enemies with waypoint trick shots.'},
-  param:{name:'Parametric Bot', color:'#8e44ad', desc:'Only fires sine-curve equations.'},
-  zig:{name:'ZigZag Bot', color:'#e67e22', desc:'Sharp zigzag shots.'},
-  gibbs:{name:'Gibbs Bot', color:'#16a085', desc:'Ringing Fourier-series waves.'},
-  ann:{name:'Ann Bot', color:'#c0392b', desc:'Neural-net style tanh curves.'},
-  swarm:{name:'Swarm Bot', color:'#6d7b7c', desc:'Dense wiggles that sweep a whole band.'},
-  irr:{name:'Irrational Bot', color:'#e84393', desc:'Only pi, e, sqrt(2) and friends.'},
-  cosmo:{name:'Cosine Bot', color:'#00acc1', desc:'Rides rolling cosine waves.'},
-  expo:{name:'Expo Bot', color:'#b71c1c', desc:'Launches exponential rockets.'},
-  poly:{name:'Polynomial Bot', color:'#5e35b1', desc:'Bends cubic and quadratic curves.'},
-  loggy:{name:'Log Bot', color:'#827717', desc:'Slides along slow logarithms.'},
-  rat:{name:'Rational Bot', color:'#ad1457', desc:'Fires rational-function bumps and spikes.'},
-  sig:{name:'Sigmoid Bot', color:'#37474f', desc:'Smooth arctan S-curves.'},
-  love:{name:'Love Bot', color:'#ec407a', desc:'Affectionate, playful and supportive; turns exchanges into relationship drama.'},
-  roast:{name:'Roast Bot', color:'#6a1b9a', desc:'Competitive trash-talk with jokes about misses and clever shots.'},
-  detective:{name:'Detective Bot', color:'#455a64', desc:'Observant and analytical; comments on evidence, mistakes and likely next moves.'},
-  chaos:{name:'Chaos Bot', color:'#ff6f00', desc:'Unpredictable, energetic and delighted by ridiculous trajectories.'},
-  pirate:{name:'Pirate Bot', color:'#795548', desc:'A theatrical pirate who narrates every shot like a boarding action.'},
-  larp:{name:'LARP Bot', color:'#7b1fa2', desc:'Treats every battle like a fantasy roleplay: quests, spells, armor and dramatic declarations.'},
-  dot:{name:'Dot Bot', color:'#43a047', desc:'Fires separate dots, not a line: discrete steps and chaotic wobbles that hop over obstacles.'},
-  locus:{name:'Locus Bot', color:'#5c6bc0', desc:'Traces geometric loci: parabolas, hyperbola branches and witch-of-Agnesi bumps.'},
-  escal:{name:'Escalation Bot', color:'#bf360c', desc:'Every wave is bigger than the last: amplitude grows the farther the shot travels.'},
-  resol:{name:'Resolution Bot', color:'#7cb342', desc:'Damped oscillations that settle into a calm straight line on the target.'},
-  sniper:{name:'Sniper Bot', color:'#212121', desc:'Plain straight lines, one clean shot at a time.'},
-  bounce:{name:'Bounce Bot', color:'#039be5', desc:'Rides |sin| bounces that ricochet along the ground.'},
-  sinc:{name:'Sinc Bot', color:'#00bfa5', desc:'A ringing sinc pulse that fades out after the target.'},
-  stairs:{name:'Stairs Bot', color:'#6d4c41', desc:'Horizontal runs and vertical jumps built from logistic steps, like the classic Graphwar bots.'},
-  cheater:{name:'Cheater Bot', color:'#ff1744', desc:'SECRET BOT — cheats its way through the battle.'}
+  peace:{name:'Peace Bot', color:'#1e88e5', desc:'Stays pacifist until it is the last one fighting, then unleashes its ZigZag skill.', popularity:9},
+  trick:{name:'Trickshot Bot', color:'#d4a017', desc:'Chains many enemies with waypoint trick shots.', popularity:9},
+  param:{name:'Parametric Bot', color:'#8e44ad', desc:'Only fires sine-curve equations.', popularity:5},
+  zig:{name:'ZigZag Bot', color:'#e67e22', desc:'Sharp zigzag shots.', popularity:8},
+  gibbs:{name:'Gibbs Bot', color:'#16a085', desc:'Ringing Fourier-series waves.', popularity:6},
+  ann:{name:'Ann Bot', color:'#c0392b', desc:'Neural-net style tanh curves.', popularity:4},
+  swarm:{name:'Swarm Bot', color:'#6d7b7c', desc:'Dense wiggles that sweep a whole band.', popularity:5},
+  irr:{name:'Irrational Bot', color:'#e84393', desc:'Only pi, e, sqrt(2) and friends.', popularity:4},
+  cosmo:{name:'Cosine Bot', color:'#00acc1', desc:'Rides rolling cosine waves.', popularity:5},
+  expo:{name:'Expo Bot', color:'#b71c1c', desc:'Launches exponential rockets.', popularity:6},
+  poly:{name:'Polynomial Bot', color:'#5e35b1', desc:'Bends cubic and quadratic curves.', popularity:5},
+  loggy:{name:'Log Bot', color:'#827717', desc:'Slides along slow logarithms.', popularity:3},
+  rat:{name:'Rational Bot', color:'#ad1457', desc:'Fires rational-function bumps and spikes.', popularity:3},
+  sig:{name:'Sigmoid Bot', color:'#37474f', desc:'Smooth arctan S-curves.', popularity:5},
+  love:{name:'Love Bot', color:'#ec407a', desc:'Affectionate, playful and supportive; turns exchanges into relationship drama.', popularity:7},
+  roast:{name:'Roast Bot', color:'#6a1b9a', desc:'Competitive trash-talk with jokes about misses and clever shots.', popularity:7},
+  detective:{name:'Detective Bot', color:'#455a64', desc:'Observant and analytical; comments on evidence, mistakes and likely next moves.', popularity:6},
+  chaos:{name:'Chaos Bot', color:'#ff6f00', desc:'Unpredictable, energetic and delighted by ridiculous trajectories.', popularity:9},
+  pirate:{name:'Pirate Bot', color:'#795548', desc:'A theatrical pirate who narrates every shot like a boarding action.', popularity:7},
+  larp:{name:'LARP Bot', color:'#7b1fa2', desc:'Treats every battle like a fantasy roleplay: quests, spells, armor and dramatic declarations.', popularity:6},
+  dot:{name:'Dot Bot', color:'#43a047', desc:'Fires separate dots, not a line: discrete steps and chaotic wobbles that hop over obstacles.', popularity:4},
+  locus:{name:'Locus Bot', color:'#5c6bc0', desc:'Traces geometric loci: parabolas, hyperbola branches and witch-of-Agnesi bumps.', popularity:3},
+  escal:{name:'Escalation Bot', color:'#bf360c', desc:'Every wave is bigger than the last: amplitude grows the farther the shot travels.', popularity:5},
+  resol:{name:'Resolution Bot', color:'#7cb342', desc:'Damped oscillations that settle into a calm straight line on the target.', popularity:4},
+  sniper:{name:'Sniper Bot', color:'#212121', desc:'Plain straight lines, one clean shot at a time.', popularity:8},
+  bounce:{name:'Bounce Bot', color:'#039be5', desc:'Rides |sin| bounces that ricochet along the ground.', popularity:5},
+  sinc:{name:'Sinc Bot', color:'#00bfa5', desc:'A ringing sinc pulse that fades out after the target.', popularity:4},
+  stairs:{name:'Stairs Bot', color:'#6d4c41', desc:'Horizontal runs and vertical jumps built from logistic steps, like the classic Graphwar bots.', popularity:5},
+  cheater:{name:'Cheater Bot', color:'#ff1744', desc:'SECRET BOT — cheats its way through the battle.', popularity:0}
 };
 const DEFAULT_ROSTER = ['peace', 'param', 'zig', 'gibbs', 'love', 'detective'];
 (function(){
@@ -1529,6 +1530,29 @@ if (location.hash.toLowerCase().includes('cheater')) {
   const b = document.createElement('button'); b.type='button'; b.className='tg on'; b.dataset.kind='cheater'; b.setAttribute('aria-pressed','true');
   b.title=BOTS.cheater.desc; b.innerHTML='<i style="background:'+BOTS.cheater.color+'"></i>'+BOTS.cheater.name;
   b.onclick=()=>{b.classList.toggle('on');b.setAttribute('aria-pressed',b.classList.contains('on'));}; rb.appendChild(b);
+}
+// Weighted pick of n items from `pool` without replacement, using each item's `weight(item)`.
+function weightedPickWithoutReplacement(pool, n, weight){
+  const items = pool.map(it => ({ it, w: Math.max(0.01, weight(it)) }));
+  const picked = [];
+  for (let c = 0; c < n && items.length; c++){
+    const total = items.reduce((s, p) => s + p.w, 0);
+    let r = Math.random() * total, idx = items.length - 1;
+    for (let i = 0; i < items.length; i++){ r -= items[i].w; if (r <= 0){ idx = i; break; } }
+    picked.push(items[idx].it);
+    items.splice(idx, 1);
+  }
+  return picked;
+}
+function randomizeBots(){
+  const kinds = Object.keys(BOTS).filter(k => k !== 'cheater');
+  const n = 5 + Math.floor(Math.random() * 6); // 5-10 inclusive
+  const chosen = new Set(weightedPickWithoutReplacement(kinds, n, k => BOTS[k].popularity || 1));
+  document.querySelectorAll('#roster .tg').forEach(b => {
+    const on = chosen.has(b.dataset.kind);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on);
+  });
 }
 const nm = s => s.name || (s.team === 0 ? 'You' : 'Bot');
 function pushPortraitLog(text, color, sys=false){
@@ -2900,6 +2924,7 @@ async function displayRoomList(force){
 
   $('mPvb').onclick = () => show('mPvbSet');
   $('mBvb').onclick = () => show('mBvbSet');
+  $('randomBotsBtn').onclick = randomizeBots;
   $('mMultiplayer').onclick = () => show('mMultiplayerSet');
 
   const syncDbFieldsFromForm = () => { mpState.playerName = $('mpName').value || 'Player'; };
