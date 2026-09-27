@@ -506,6 +506,7 @@ function compile(str){
 /* ---------- game state ---------- */
 let roundPending = false; // true between round setup and the first turn (intro card showing)
 let teams, current = null, turnTeam = 0, state = 'over', shot = null, expl = [], preview = null;
+let killBanner = null;
 let auto = false, gameId = 0, botBusy = false;
 let battle = false, speed = 1, stall = 0, feedList = [], portraitLogList = [];
 let videoMode = false, directorMode = true, highlightCards = true, voiceOver = false, recorder = null, recordedChunks = [], videoUrl = null, videoBlob = null, finishRecordingTimer = null;
@@ -1340,7 +1341,7 @@ function update(){
     // leading point instead of snapping from the shooter straight to impact.
     shot.i += (videoMode && battle ? 10 * Math.min(speed, 2) : 45 * speed); const L = shot.path.length;
     graphLineTone();
-    for (const h of shot.hits) if (!h.done && h.i <= shot.i){ h.done = true; h.s.alive = false; stall = 0; SFX.death(); feed(nm(shot.shooter) + ' eliminated ' + nm(h.s)); if (battle) chatSystem(nm(shot.shooter) + ' eliminated ' + nm(h.s)); boom(h.s.x, h.s.y, 1.8); onKill(shot.shooter, h.s); updateUI(); }
+    for (const h of shot.hits) if (!h.done && h.i <= shot.i){ h.done = true; h.s.alive = false; stall = 0; SFX.death(); feed(nm(shot.shooter) + ' eliminated ' + nm(h.s)); if (battle) chatSystem(nm(shot.shooter) + ' eliminated ' + nm(h.s)); boom(h.s.x, h.s.y, 1.8); onKill(shot.shooter, h.s); killBanner = {shooter: nm(shot.shooter), victim: nm(h.s), team: shot.shooter && shot.shooter.team === h.s.team, t: 0}; updateUI(); }
     if (shot.i >= L){
       shot.i = L;
       { const sb = shot.shooter; if (sb && sb.bubble) sb.bubbleT = Math.max(sb.bubbleT, bubLife(sb) - 100); } // hold ~1s after impact, then fade out
@@ -1351,6 +1352,7 @@ function update(){
     }
   }
   expl.forEach(e => e.t += 0.04 * Math.min(speed, 3)); expl = expl.filter(e => e.t < 1);
+  if (killBanner){ killBanner.t += 0.025 * Math.min(speed, 3); if (killBanner.t >= 1) killBanner = null; }
   if (teams) for (const T of teams) for (const s of T.soldiers){ if (s.bubble) s.bubbleT += speed; if (s.say) s.say.t += speed; }
 }
 
@@ -2256,6 +2258,21 @@ function draw(t){
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
   }
   ctx.restore();
+  if (killBanner){
+    const kb = killBanner, pop = kb.t < 0.15 ? kb.t / 0.15 : 1, fade = kb.t > 0.7 ? 1 - (kb.t - 0.7) / 0.3 : 1;
+    const scale = 0.7 + 0.3 * Math.min(1, pop * 1.4), alpha = Math.min(1, fade);
+    const label = kb.team ? 'TEAM KILL' : 'ELIMINATED', sub = kb.shooter + '  \u2192  ' + kb.victim;
+    ctx.save(); ctx.globalAlpha = alpha; ctx.textAlign = 'center';
+    ctx.translate(CW / 2, CH * 0.16); ctx.scale(scale, scale);
+    ctx.font = 'bold 26px "DejaVu Sans",Verdana,sans-serif';
+    ctx.fillStyle = kb.team ? '#c62828' : '#f7a21b';
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineJoin = 'round';
+    ctx.strokeText(label, 0, 0); ctx.fillText(label, 0, 0);
+    ctx.font = '13px "DejaVu Sans",Verdana,sans-serif'; ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 3;
+    ctx.strokeText(sub, 0, 20); ctx.fillText(sub, 0, 20);
+    ctx.restore();
+  }
 }
 function loop(t){
   if (!VT.on){            // while exporting, vtDrive() steps the game instead
