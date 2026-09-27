@@ -267,8 +267,8 @@ textarea.mp-input{resize:vertical;font-family:inherit}
       <div class="ytfield"><span class="lb">Description</span><textarea id="ytDesc" class="mp-input" rows="3">Recorded with Graphwar.</textarea></div>
       <div class="mrow"><span class="lb">Privacy</span>
         <select id="ytPrivacy">
-          <option value="unlisted" selected>Unlisted</option>
-          <option value="public">Public</option>
+          <option value="unlisted">Unlisted</option>
+          <option value="public" selected>Public</option>
           <option value="private">Private</option>
         </select>
       </div>
@@ -3117,7 +3117,7 @@ $('mMpCreateRoom').onclick = async () => {
       const accessToken = await ytGetAccessToken(clientId);
       const metadata = {
         snippet: { title: ($('ytTitle').value || 'Graphwar battle').slice(0,100), description: $('ytDesc').value || '' },
-        status: { privacyStatus: $('ytPrivacy').value || 'unlisted' }
+        status: { privacyStatus: $('ytPrivacy').value || 'public' }
       };
       const vid = await ytUploadOne(videoBlob, metadata, accessToken, t => statusEl.textContent = t);
       statusEl.innerHTML = '\u2713 Uploaded! <a href="https://youtu.be/' + vid + '" target="_blank" rel="noopener" style="color:#f7a21b">Watch it on YouTube</a>';
@@ -3183,7 +3183,7 @@ $('mMpCreateRoom').onclick = async () => {
       blob: videoBlob,
       title: ($('ytTitle').value || 'Graphwar battle').slice(0,100),
       desc: $('ytDesc').value || '',
-      privacy: $('ytPrivacy').value || 'unlisted',
+      privacy: $('ytPrivacy').value || 'public',
       status: 'queued'
     });
     $('ytQueueCount').textContent = ytQueue.length;
@@ -3269,7 +3269,7 @@ $('mMpCreateRoom').onclick = async () => {
         const publishAt = schedule[i];
         const metadata = publishAt
           ? { snippet: { title: item.title, description: item.desc }, status: { privacyStatus: 'private', publishAt: publishAt.toISOString() } }
-          : { snippet: { title: item.title, description: item.desc }, status: { privacyStatus: item.privacy || 'unlisted' } };
+          : { snippet: { title: item.title, description: item.desc }, status: { privacyStatus: item.privacy || 'public' } };
         const vid = await ytUploadOne(item.blob, metadata, accessToken);
         item.status = 'done'; item.videoId = vid;
       } catch(e){
