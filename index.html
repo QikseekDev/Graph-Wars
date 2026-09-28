@@ -3153,13 +3153,13 @@ function startRoomListPolling(){
 
 /* ---------- public chat: one DB value (ver + last 40 msgs), full log kept client-side ---------- */
 const CHAT_KEY = 'graphwar_chat_log_v1', CHAT_KEEP = 300;
-let chatLog = (() => { try { const a = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}'); return {ver: +a.ver || 0, msgs: Array.isArray(a.msgs) ? a.msgs : []}; } catch(e){ return {ver: 0, msgs: []}; } })();
+let chatStore = (() => { try { const a = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}'); return {ver: +a.ver || 0, msgs: Array.isArray(a.msgs) ? a.msgs : []}; } catch(e){ return {ver: 0, msgs: []}; } })();
 let chatTimer = null, chatDelay = 4000, chatBusy = false, chatLastPost = 0;
 function chatRender(){
   const el = $('mpChatLog'); if(!el) return;
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
   el.textContent = '';
-  chatLog.msgs.slice(-80).forEach(m => {
+  chatStore.msgs.slice(-80).forEach(m => {
     const d = document.createElement('div'), t = document.createElement('span'), b = document.createElement('b');
     t.className = 't'; t.textContent = new Date(m.t).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
     b.textContent = m.n + ': ';
@@ -3168,10 +3168,10 @@ function chatRender(){
   if(stick) el.scrollTop = el.scrollHeight;
 }
 function chatMerge(ver, msgs){
-  const seen = new Set(chatLog.msgs.map(m => m.i)); let added = 0;
-  (msgs || []).forEach(m => { if(m && m.i && !seen.has(m.i)){ chatLog.msgs.push({i: String(m.i), t: +m.t || 0, n: String(m.n || 'Player'), m: String(m.m || '')}); added++; } });
-  chatLog.msgs.sort((a, b) => a.t - b.t); chatLog.msgs = chatLog.msgs.slice(-CHAT_KEEP); chatLog.ver = ver;
-  try { localStorage.setItem(CHAT_KEY, JSON.stringify(chatLog)); } catch(e){}
+  const seen = new Set(chatStore.msgs.map(m => m.i)); let added = 0;
+  (msgs || []).forEach(m => { if(m && m.i && !seen.has(m.i)){ chatStore.msgs.push({i: String(m.i), t: +m.t || 0, n: String(m.n || 'Player'), m: String(m.m || '')}); added++; } });
+  chatStore.msgs.sort((a, b) => a.t - b.t); chatStore.msgs = chatStore.msgs.slice(-CHAT_KEEP); chatStore.ver = ver;
+  try { localStorage.setItem(CHAT_KEY, JSON.stringify(chatStore)); } catch(e){}
   if(added) chatRender();
   return added;
 }
@@ -3181,7 +3181,7 @@ async function chatPoll(){
   if(!document.hidden && !chatBusy){
     chatBusy = true;
     try {
-      const r = await roomApi('chat_get', {since: chatLog.ver});
+      const r = await roomApi('chat_get', {since: chatStore.ver});
       $('mpChatStatus').textContent = '';
       if(r.unchanged) chatDelay = Math.min(chatDelay * 1.25, 15000);
       else { chatMerge(+r.ver || 0, r.messages); chatDelay = 4000; }
