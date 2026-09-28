@@ -136,6 +136,8 @@ textarea.mp-input{resize:vertical;font-family:inherit}
 .mp-player{display:inline-block;padding:6px 12px;margin:4px;background:rgba(255,255,255,.15);border-radius:6px;font-size:.9rem;border:1px solid rgba(255,255,255,.3)}
 .mp-room{padding:12px;margin:8px 0;background:rgba(255,255,255,.08);border:1px solid #6f9668;border-radius:8px;cursor:pointer}
 .mp-room:hover{background:rgba(255,255,255,.12)}
+.mp-room.private{border-style:dashed}
+.mp-room small{display:block;color:#a9c7a2;margin-top:2px}
 .mp-status{font-size:.85rem;color:#a9c7a2;margin:8px 0;min-height:20px}
 #mpRoomList{max-height:200px;overflow-y:auto}
 #mpChat{margin-top:10px}
@@ -205,6 +207,8 @@ textarea.mp-input{resize:vertical;font-family:inherit}
           <p class="mh">Match Settings</p>
           <div class="mrow"><span class="lb">Players</span><select id="mpMaxPlayers"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></div>
           <div class="mrow"><span class="lb">Soldiers per player</span><select id="mpSoldiers"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+          <label class="video-toggle"><input type="checkbox" id="mpPrivate"><span><b>Private room</b><small style="display:block;color:#a9c7a2;font-weight:normal">Shows as 🔒 in Browse Rooms without its code. Players must enter the code.</small></span></label>
+          <div id="mpPwRow" class="hide"><input type="text" id="mpPassword" class="mp-input" maxlength="32" placeholder="Password (optional)" autocomplete="off" spellcheck="false"></div>
           <p class="mh" style="margin-top:14px">Multiplayer Mods</p>
           <label class="video-toggle"><input type="checkbox" id="mpModSudden"><span><b>Sudden Death</b><small style="display:block;color:#a9c7a2;font-weight:normal">One soldier per player.</small></span></label>
           <label class="video-toggle"><input type="checkbox" id="mpModBlind"><span><b>Blind Aim</b><small style="display:block;color:#a9c7a2;font-weight:normal">No trajectory preview; you must commit to the equation.</small></span></label>
@@ -236,8 +240,13 @@ textarea.mp-input{resize:vertical;font-family:inherit}
     <div class="mscreen hide" id="mMultiplayerJoin">
       <div class="mcard">
         <p class="mh">Join Room</p>
-        <div class="mhint">Enter the 6-digit code from your opponent</div>
+        <div class="mhint" id="mpJoinHint">Enter the 6-digit code from your opponent</div>
         <input type="text" id="mpJoinCode" class="mp-input" maxlength="6" placeholder="e.g. ABC123" style="text-transform:uppercase">
+        <div id="mpJoinPwRow" class="hide">
+          <div class="mhint">🔒 This room is password protected</div>
+          <input type="password" id="mpJoinPassword" class="mp-input" maxlength="32" placeholder="Room password" autocomplete="off">
+        </div>
+        <p class="mp-status" id="mpJoinStatus" style="color:#ff8a80"></p>
       </div>
       <button class="mbtn" id="mMpJoinGo">Join</button>
       <button class="mbtn ghost" data-back="2">Back</button>
@@ -247,7 +256,7 @@ textarea.mp-input{resize:vertical;font-family:inherit}
       <div class="mcard">
         <p class="mh">Room Lobby</p>
         <div class="mp-status">Room Code: <span class="mp-code" id="mpRoomCode"></span></div>
-        <div class="mhint">Share this code with your opponent or have them find you in Browse Rooms</div>
+        <div class="mhint" id="mpLobbyHint">Share this code with your opponent or have them find you in Browse Rooms</div>
         <div id="mpPlayers" style="margin:12px 0;padding:12px;background:rgba(0,0,0,.2);border-radius:6px"></div>
         <p class="mp-status" id="mpLobbyStatus">Waiting for opponent...</p>
         <p class="mp-status" id="mpLobbyWarn" style="color:#ffb74d"></p>
@@ -2555,6 +2564,9 @@ let mpState = {
   ready: false,
   remoteReady: false,
   isHost: false,
+  roomToken: null,    // proof of a correct room password; sent with chat requests for password rooms
+  isPrivate: false,
+  roomPassword: null, // host only, shown in their lobby so they can share it
   roomSecret: null,   // only ever set on the host; never sent to or shown to other players
   starting: false,
   rooms: [],
@@ -2603,7 +2615,7 @@ async function leaveMultiplayerRoom(notify=true){
   Object.values(mpState.connections).forEach(conn => { try { conn.close(); } catch(e){} });
   mpState.connections = {};
   mpState.mode = 'singleplayer';
-  mpState.roomCode = null; mpState.roomSecret = null; mpState.hostPeerId = null; mpState.myTeamIndex = -1; mpState.playerTeams = {};
+  mpState.roomCode = null; mpState.roomSecret = null; mpState.roomToken = null; mpState.isPrivate = false; mpState.roomPassword = null; mpState.hostPeerId = null; mpState.myTeamIndex = -1; mpState.playerTeams = {};
   mpState.ready = false; mpState.remoteReady = false; mpState.isHost = false; mpState.starting = false;
   mpState.remoteReady = false;
 }
@@ -2966,10 +2978,10 @@ let dbTableReady = false;
 async function ensureRoomsTable(){
   if(dbTableReady) return;
   // The table only needs creating once; remember that so we don't spend an API call every session.
-  try { if(localStorage.getItem('graphwar_table_ok_v2') === '1'){ dbTableReady = true; return; } } catch(e){}
+  try { if(localStorage.getItem('graphwar_table_ok_v3') === '1'){ dbTableReady = true; return; } } catch(e){}
   await roomApi('init');
   dbTableReady = true;
-  try { localStorage.setItem('graphwar_table_ok_v2', '1'); } catch(e){}
+  try { localStorage.setItem('graphwar_table_ok_v3', '1'); } catch(e){}
 }
 
 // No network call here: the first real room action (list/create/join) will use the database,
@@ -2980,7 +2992,7 @@ async function testDbConnection(){
   try {
     const r = await roomApi('ping');          // really talks to the database (creates tables, checks schema)
     mpState.useDb = true; dbTested = true; dbTableReady = true; window.lastDbError = '';
-    try { localStorage.setItem('graphwar_table_ok_v2', '1'); } catch(e){}
+    try { localStorage.setItem('graphwar_table_ok_v3', '1'); } catch(e){}
     setMpStatus('✓ Multiplayer database ready · ' + (r.rooms || 0) + ' open room(s)', false);
     return true;
   } catch(e){
@@ -2996,7 +3008,7 @@ function normalizeRoom(r){
   if(typeof p === 'string'){ try { p = JSON.parse(p); } catch(e){ p = null; } }
   const names = Array.isArray(p) ? p : ((p && p.p) || [r.host]);
   const max = (p && !Array.isArray(p) && +p.m) || +r.max || 2;
-  return { code: r.code, peerId: r.peer_id ?? r.peerId, host: r.host, created: Number(r.created), players: names, max };
+  return { code: r.code || null, peerId: r.peer_id ?? r.peerId ?? null, host: r.host, created: Number(r.created), players: names, max, private: !!r.private, locked: !!r.locked };
 }
 
 /* ---------- room storage: Layerbase if configured & working, else localStorage ---------- */
@@ -3039,9 +3051,10 @@ async function createRoom(){
     try {
       await ensureRoomsTable();
       // The server picks the room code and makes a secret that only this (host) client ever receives.
-      const r = await roomApi('create', {peer_id: room.peerId, host: room.host, max: mpState.maxPlayers});
+      const r = await roomApi('create', {peer_id: room.peerId, host: room.host, max: mpState.maxPlayers, private: mpState.isPrivate, password: mpState.roomPassword || ''});
       mpState.roomCode = r.code;
       mpState.roomSecret = r.secret;
+      mpState.roomToken = r.token || null;
       clearInterval(roomHb);
       roomHb = setInterval(() => { if(mpState.roomSecret && mpState.mode === 'lobby') updateRoomRecord(); else clearInterval(roomHb); }, 10*60*1000);
       return;
@@ -3052,7 +3065,7 @@ async function createRoom(){
       mpState.useDb = false;
     }
   }
-  saveRoomToLocalStorage(room);
+  if(!mpState.isPrivate) saveRoomToLocalStorage(room);   // private rooms are never written to the local list
 }
 
 let roomListAt = 0;
@@ -3075,18 +3088,21 @@ async function fetchRoomList(force){
   return loadRoomsFromLocalStorage();
 }
 
-async function findRoomByCode(code){
+// Returns { room, needsPassword, badPassword, token }. Password rooms only give up their peer id for the right password.
+async function findRoomByCode(code, password){
   if(mpState.useDb){
     try {
       await ensureRoomsTable();
-      const data = await roomApi('get', {code});
-      if(data.rooms && data.rooms.length) return normalizeRoom(data.rooms[0]);
+      const data = await roomApi('get', {code, password: password || ''});
+      if(data.rooms && data.rooms.length) return { room: normalizeRoom(data.rooms[0]), token: data.token || null };
+      if(data.needs_password) return { room: null, needsPassword: true, badPassword: !!data.bad_password };
     } catch(e){
       console.error('DB lookup failed, falling back to local:', e);
+      if(/429/.test(e.message)) return { room: null, tooMany: true };
     }
   }
   loadRoomsFromLocalStorage();
-  return mpState.rooms.find(r => r.code === code) || null;
+  return { room: mpState.rooms.find(r => r.code === code) || null };
 }
 
 function updateLobbyDisplay(){
@@ -3115,6 +3131,16 @@ function updateLobbyDisplay(){
   }
 }
 
+function openJoinScreen(code, needsPw){
+  $('mpJoinCode').value = code || '';
+  $('mpJoinPassword').value = '';
+  $('mpJoinPwRow').classList.toggle('hide', !needsPw);
+  $('mpJoinStatus').textContent = '';
+  $('mpJoinHint').textContent = code ? 'Room ' + code : 'Enter the 6-character room code from the host';
+  show('mMultiplayerJoin');
+  if(!code) $('mpJoinCode').focus();
+}
+
 async function displayRoomList(force, quiet){
   const list = $('mpRoomList'), statusEl = $('mpListStatus');
   if(!quiet){ statusEl.textContent = 'Loading rooms...'; list.innerHTML = ''; }
@@ -3133,8 +3159,14 @@ async function displayRoomList(force, quiet){
     const div = document.createElement('div');
     div.className = 'mp-room';
     const n = (room.players || []).length || 1;
-    div.innerHTML = `<b>${escHtml(room.code)}</b> - ${escHtml(room.host)} (${n}/${room.max || 2})` + (room.code === mpState.roomCode ? ' · your room' : '');
-    div.onclick = () => { $('mpJoinCode').value = room.code; show('mMultiplayerJoin'); };
+    if(room.private){
+      div.className = 'mp-room private';
+      div.innerHTML = `🔒 <b>Private room</b> - ${escHtml(room.host)} (${n}/${room.max || 2})<small>${room.locked ? 'Code and password required' : 'Code required'}</small>`;
+      div.onclick = () => openJoinScreen('', room.locked);
+    } else {
+      div.innerHTML = `<b>${escHtml(room.code)}</b> - ${escHtml(room.host)} (${n}/${room.max || 2})` + (room.code === mpState.roomCode ? ' · your room' : '');
+      div.onclick = () => openJoinScreen(room.code, false);
+    }
     list.appendChild(div);
   });
 }
@@ -3194,7 +3226,7 @@ async function chatPoll(){
     chatBusy = true;
     try {
       const code = mpState.roomCode;
-      const r = await roomApi('chat_get', {code, since: chatStore.ver});
+      const r = await roomApi('chat_get', {code, since: chatStore.ver, token: mpState.roomToken || undefined});
       if(code !== mpState.roomCode || code !== chatRoom){ chatBusy = false; return; }   // left/changed room while waiting
       $('mpChatStatus').textContent = '';
       if(r.unchanged) chatDelay = Math.min(chatDelay * 1.25, 15000);
@@ -3222,7 +3254,7 @@ async function chatSend(){
   chatLastPost = Date.now(); inp.value = '';
   const name = ($('mpName').value || 'Player').trim().slice(0, 30) || 'Player';
   const cid = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
-  try { await roomApi('chat_post', {code: mpState.roomCode, name, text, cid}); $('mpChatStatus').textContent = ''; chatPoll(); }
+  try { await roomApi('chat_post', {code: mpState.roomCode, name, text, cid, token: mpState.roomToken || undefined}); $('mpChatStatus').textContent = ''; chatPoll(); }
   catch(e){ $('mpChatStatus').textContent = 'Not sent: ' + e.message; inp.value = text; }
 }
 $('mpChatSend').onclick = chatSend;
@@ -3292,6 +3324,8 @@ $('mMpCreateRoom').onclick = async () => {
     mpState.roomCode = Math.random().toString(36).slice(2,8).toUpperCase();
     mpState.isHost = true; mpState.mode = 'lobby'; mpState.myTeamIndex = 0;
     mpState.hostPeerId = mpState.peerId;
+    mpState.isPrivate = $('mpPrivate').checked;
+    mpState.roomPassword = mpState.isPrivate ? ($('mpPassword').value || '').trim().slice(0, 32) : '';
     mpState.maxPlayers = Math.max(2, Math.min(4, +$('mpMaxPlayers').value || 2));
     mpState.soldiersPerPlayer = Math.max(1, Math.min(5, +$('mpSoldiers').value || 2));
     mpState.matchSpeed = 1;
@@ -3300,9 +3334,13 @@ $('mMpCreateRoom').onclick = async () => {
     await createRoom();                       // may replace roomCode with the server-issued one
     $('mpLobbyWarn').textContent = mpState.roomSecret ? '' : '⚠ This room is NOT public: database unreachable' + (window.lastDbError ? ' (' + window.lastDbError + ')' : '') + '. Others cannot find or join it.';
     $('mpRoomCode').textContent = mpState.roomCode;
+    $('mpLobbyHint').textContent = mpState.isPrivate
+      ? '🔒 Private room: it shows as "Private room" in Browse Rooms. Share the code' + (mpState.roomPassword ? ' and password (' + mpState.roomPassword + ')' : '') + ' with your friends.'
+      : 'Share this code with your opponent or have them find you in Browse Rooms';
     updateLobbyDisplay();
     show('mMultiplayerLobby');
   };
+  $('mpPrivate').onchange = () => $('mpPwRow').classList.toggle('hide', !$('mpPrivate').checked);
   $('mMpJoinGo').onclick = async () => {
     const code = $('mpJoinCode').value.toUpperCase().trim();
     if(!code || code.length !== 6){
@@ -3311,11 +3349,23 @@ $('mMpCreateRoom').onclick = async () => {
     }
     syncDbFieldsFromForm();
     if(!mpState.useDb){ await testDbConnection(); }
-    const room = await findRoomByCode(code);
+    const st = $('mpJoinStatus'); st.textContent = '';
+    const pw = ($('mpJoinPassword').value || '').trim();
+    const found = await findRoomByCode(code, pw);
+    if(found.tooMany){ st.textContent = 'Too many attempts. Wait a minute and try again.'; return; }
+    if(found.needsPassword){
+      $('mpJoinPwRow').classList.remove('hide');
+      st.textContent = found.badPassword ? 'Wrong password.' : 'This room needs a password.';
+      $('mpJoinPassword').focus();
+      return;
+    }
+    const room = found.room;
     if(!room){
       alert('Room not found. Make sure the code is correct and the multiplayer server database is available.');
       return;
     }
+    mpState.roomToken = found.token || null;
+    $('mpJoinPassword').value = '';
     mpState.roomCode = code;
     mpState.hostPeerId = room.peerId;
     mpState.isHost = false; mpState.mode = 'lobby'; mpState.myTeamIndex = -1;
