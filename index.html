@@ -2543,6 +2543,7 @@ let mpState = {
   ready: false,
   remoteReady: false,
   isHost: false,
+  roomSecret: null,   // only ever set on the host; never sent to or shown to other players
   starting: false,
   rooms: [],
   roomListTimer: null,
@@ -2552,12 +2553,12 @@ let mpState = {
 };
 
 async function deleteRoomRecord(){
-  const code = mpState.roomCode;
-  if(!code || !mpState.isHost) return;      // joiners must not delete the host's room
+  const code = mpState.roomCode, secret = mpState.roomSecret;
+  if(!code || !mpState.isHost) return;      // joiners have no secret, so they can never delete the host's room
+  mpState.roomSecret = null;                // one delete is enough
   try {
-    if(mpState.useDb){
-      await ensureRoomsTable();
-      await dbQuery('DELETE FROM ' + LB_TABLE + ' WHERE code = ' + sqlStr(code));
+    if(mpState.useDb && secret){
+      await roomApi('delete', {code, secret});
     }
   } catch(e){ console.warn('Could not delete room from Layerbase:', e); }
   try {
@@ -2571,13 +2572,13 @@ async function deleteRoomRecord(){
 // page starts closing. This is only a best-effort emergency cleanup; normal
 // Leave/Back/Menu actions still use deleteRoomRecord() above and await it.
 function deleteRoomRecordOnUnload(){
-  const code = mpState.roomCode;
-  if(!code || !mpState.useDb || !mpState.isHost) return;
+  const code = mpState.roomCode, secret = mpState.roomSecret;
+  if(!code || !secret || !mpState.useDb || !mpState.isHost) return;
   try {
     fetch(LB_PROXY, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({query: 'DELETE FROM ' + LB_TABLE + ' WHERE code = ' + sqlStr(code)}),
+      body: JSON.stringify({action: 'delete', code, secret}),
       keepalive: true
     }).catch(()=>{});
   } catch(e){}
@@ -2590,7 +2591,7 @@ async function leaveMultiplayerRoom(notify=true){
   Object.values(mpState.connections).forEach(conn => { try { conn.close(); } catch(e){} });
   mpState.connections = {};
   mpState.mode = 'singleplayer';
-  mpState.roomCode = null; mpState.hostPeerId = null; mpState.myTeamIndex = -1; mpState.playerTeams = {};
+  mpState.roomCode = null; mpState.roomSecret = null; mpState.hostPeerId = null; mpState.myTeamIndex = -1; mpState.playerTeams = {};
   mpState.ready = false; mpState.remoteReady = false; mpState.isHost = false; mpState.starting = false;
   mpState.remoteReady = false;
 }
@@ -2692,6 +2693,9 @@ function setMpStatus(text, isErr){
 }
 
 function handleIncomingConnection(conn){
+  // A guest only ever talks to the host it joined. Anyone else who dials in is refused,
+  // so nobody can send a guest fake "start" / "welcome" / "result" messages.
+  if(!mpState.isHost && conn.peer !== mpState.hostPeerId){ try { conn.close(); } catch(e){} return; }
   mpState.connections[conn.peer] = conn;
   conn.on('data', data => handleMultiplayerMessage(data, conn.peer));
   conn.on('open', () => {
@@ -2744,6 +2748,10 @@ function sendRoster(){
 
 function handleMultiplayerMessage(data, fromPeerId){
   if(!data || typeof data.type !== 'string') return;
+  // Sender checks: guests only accept messages from their host; the host only accepts
+  // messages from peers that have joined (said hello) - anything else is ignored.
+  if(mpState.isHost){ if(data.type !== 'hello' && mpState.playerTeams[fromPeerId] == null) return; }
+  else if(fromPeerId !== mpState.hostPeerId) return;
   if(data.type === 'hello'){
     if(mpState.isHost){
       const ids = Object.keys(mpState.playerTeams);
@@ -2910,49 +2918,37 @@ function maybeStartMultiplayer(){
    sends only the multiplayer SQL query to the same-origin proxy.
 */
 const LB_PROXY = '/api/public/layerbase';
-const LB_TABLE = 'graphwar_rooms';
 
 function dbConfigured(){ return true; }
 
-async function dbQuery(sql){
+// The browser never sends SQL. It asks the server to do one of a few actions
+// (init / list / get / create / delete). Room secrets are made by the server, returned
+// only to the room's creator, and required by the server to delete a room.
+async function roomApi(action, payload){
   const res = await fetch(LB_PROXY, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({query: sql})
+    body: JSON.stringify(Object.assign({action}, payload || {}))
   });
   if(!res.ok){
     const text = await res.text().catch(()=> '');
     let detail = text.slice(0,200);
     try { const j = JSON.parse(text); detail = j.error || j.message || detail; } catch(e){}
-    throw new Error('Query failed (' + res.status + '): ' + detail);
+    throw new Error('Request failed (' + res.status + '): ' + detail);
   }
   return res.json();
 }
 
-// Accepts several common response shapes: [{...}], {rows:[{...}]}, {columns:[..], rows:[[..]]}, etc.
-function dbRows(data){
-  if(!data) return [];
-  let rows = Array.isArray(data) ? data : (data.rows ?? data.data ?? data.result ?? data.results ?? []);
-  if(rows && !Array.isArray(rows)) rows = rows.rows ?? [];
-  if(rows.length && Array.isArray(rows[0])){
-    const cols = (data.columns || data.fields || []).map(c => typeof c === 'string' ? c : (c.name || c));
-    return rows.map(r => Object.fromEntries(cols.map((c,i) => [c, r[i]])));
-  }
-  return rows;
-}
-
-// No parameter binding in this API, so escape string values ourselves.
-const sqlStr = v => "'" + String(v ?? '').replace(/\0/g,'').replace(/\\/g,'').replace(/'/g,"''") + "'";
+const escHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 let dbTableReady = false;
 async function ensureRoomsTable(){
   if(dbTableReady) return;
   // The table only needs creating once; remember that so we don't spend an API call every session.
-  try { if(localStorage.getItem('graphwar_table_ok') === '1'){ dbTableReady = true; return; } } catch(e){}
-  await dbQuery('CREATE TABLE IF NOT EXISTS ' + LB_TABLE +
-    ' (code VARCHAR(8) PRIMARY KEY, peer_id TEXT, host TEXT, created BIGINT, players TEXT)');
+  try { if(localStorage.getItem('graphwar_table_ok_v2') === '1'){ dbTableReady = true; return; } } catch(e){}
+  await roomApi('init');
   dbTableReady = true;
-  try { localStorage.setItem('graphwar_table_ok', '1'); } catch(e){}
+  try { localStorage.setItem('graphwar_table_ok_v2', '1'); } catch(e){}
 }
 
 // No network call here: the first real room action (list/create/join) will use the database,
@@ -3014,9 +3010,10 @@ async function createRoom(){
   if(mpState.useDb){
     try {
       await ensureRoomsTable();
-      await dbQuery('DELETE FROM ' + LB_TABLE + ' WHERE created < ' + (Date.now() - 3600000) + ' OR code = ' + sqlStr(room.code));
-      await dbQuery('INSERT INTO ' + LB_TABLE + ' (code, peer_id, host, created, players) VALUES (' +
-        [sqlStr(room.code), sqlStr(room.peerId), sqlStr(room.host), Math.floor(room.created), sqlStr(JSON.stringify(room.players))].join(', ') + ')');
+      // The server picks the room code and makes a secret that only this (host) client ever receives.
+      const r = await roomApi('create', {peer_id: room.peerId, host: room.host});
+      mpState.roomCode = r.code;
+      mpState.roomSecret = r.secret;
       return;
     } catch(e){
       console.error('DB insert failed, falling back to local:', e);
@@ -3035,9 +3032,8 @@ async function fetchRoomList(force){
     try {
       await ensureRoomsTable();
       roomListAt = Date.now();
-      const data = await dbQuery('SELECT code, peer_id, host, created, players FROM ' + LB_TABLE +
-        ' WHERE created > ' + (Date.now() - 3600000) + ' ORDER BY created DESC LIMIT 50');
-      mpState.rooms = dbRows(data).map(normalizeRoom);
+      const data = await roomApi('list');
+      mpState.rooms = (data.rooms || []).map(normalizeRoom);
       return mpState.rooms;
     } catch(e){
       console.error('DB read failed, falling back to local:', e);
@@ -3052,10 +3048,8 @@ async function findRoomByCode(code){
   if(mpState.useDb){
     try {
       await ensureRoomsTable();
-      const data = await dbQuery('SELECT code, peer_id, host, created, players FROM ' + LB_TABLE +
-        ' WHERE code = ' + sqlStr(code) + ' LIMIT 1');
-      const rows = dbRows(data);
-      if(rows.length) return normalizeRoom(rows[0]);
+      const data = await roomApi('get', {code});
+      if(data.rooms && data.rooms.length) return normalizeRoom(data.rooms[0]);
     } catch(e){
       console.error('DB lookup failed, falling back to local:', e);
     }
@@ -3076,7 +3070,7 @@ function updateLobbyDisplay(){
   }
   rows.sort((a,b)=>(a.team||0)-(b.team||0));
   playersDiv.innerHTML = '<b>Players (' + rows.length + '/' + (mpState.maxPlayers||2) + '):</b><br>' + rows.map(p =>
-    '<div class="mp-player">' + (p.you ? '🔵 ' : '🟢 ') + (p.name || 'Player') + ' · Team ' + ((+p.team||0)+1) + (p.you?' (You)':'') + (p.ready?' ✓':'') + '</div>'
+    '<div class="mp-player">' + (p.you ? '🔵 ' : '🟢 ') + escHtml(p.name || 'Player') + ' · Team ' + ((+p.team||0)+1) + (p.you?' (You)':'') + (p.ready?' ✓':'') + '</div>'
   ).join('');
   if(rows.length < (mpState.maxPlayers||2)) playersDiv.innerHTML += '<div class="mp-player" style="opacity:.5">⚫ Waiting for more players...</div>';
   const readyBtn = $('mMpReady');
@@ -3112,7 +3106,7 @@ async function displayRoomList(force){
     const div = document.createElement('div');
     div.className = 'mp-room';
     const n = (room.players || []).length || 1;
-    div.innerHTML = `<b>${room.code}</b> - ${room.host} (${n} player${n===1?'':'s'})`;
+    div.innerHTML = `<b>${escHtml(room.code)}</b> - ${escHtml(room.host)} (${n} player${n===1?'':'s'})`;
     div.onclick = () => {
       $('mpJoinCode').value = room.code;
       show('mMultiplayerJoin');
@@ -3185,8 +3179,8 @@ $('mMpCreateRoom').onclick = async () => {
     mpState.matchSpeed = 1;
     mpState.playerTeams = {}; mpState.roomPlayers = {};
     mpState.ready = false; mpState.remoteReady = false;
+    await createRoom();                       // may replace roomCode with the server-issued one
     $('mpRoomCode').textContent = mpState.roomCode;
-    await createRoom();
     updateLobbyDisplay();
     show('mMultiplayerLobby');
   };
