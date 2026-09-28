@@ -138,6 +138,10 @@ textarea.mp-input{resize:vertical;font-family:inherit}
 .mp-room:hover{background:rgba(255,255,255,.12)}
 .mp-status{font-size:.85rem;color:#a9c7a2;margin:8px 0;min-height:20px}
 #mpRoomList{max-height:200px;overflow-y:auto}
+#mpChat{margin-top:10px}
+#mpChatLog{height:170px;overflow-y:auto;background:rgba(0,0,0,.25);border-radius:6px;padding:8px;font-size:.85rem;margin-bottom:8px;word-break:break-word}
+#mpChatLog .t{color:#7fa578;font-size:.7rem;margin-right:6px}
+#mpChatLog b{color:#f7a21b}
 </style>
 </head>
 <body>
@@ -246,9 +250,17 @@ textarea.mp-input{resize:vertical;font-family:inherit}
         <div class="mhint">Share this code with your opponent or have them find you in Browse Rooms</div>
         <div id="mpPlayers" style="margin:12px 0;padding:12px;background:rgba(0,0,0,.2);border-radius:6px"></div>
         <p class="mp-status" id="mpLobbyStatus">Waiting for opponent...</p>
+        <p class="mp-status" id="mpLobbyWarn" style="color:#ffb74d"></p>
       </div>
       <button class="mbtn" id="mMpReady">Ready Up</button>
       <button class="mbtn ghost" data-back="1">Cancel</button>
+    </div>
+
+    <div class="mcard hide" id="mpChat">
+      <p class="mh">Public chat</p>
+      <div id="mpChatLog"></div>
+      <div class="mrow"><input type="text" id="mpChatInput" class="mp-input" maxlength="200" placeholder="Say something..." style="margin:0"><button type="button" class="mbtn" id="mpChatSend" style="width:auto;margin:0;padding:10px 16px;font-size:1rem">Send</button></div>
+      <div class="mhint" id="mpChatStatus"></div>
     </div>
   </div>
 </div>
@@ -2709,7 +2721,7 @@ function handleIncomingConnection(conn){
       delete mpState.playerTeams[conn.peer];
       delete mpState.roomPlayers[conn.peer];
       // A dropped/closed player must also remove the public room listing.
-      if(mpState.roomCode && mpState.mode !== 'singleplayer') deleteRoomRecord().catch(()=>{});
+      if(mpState.mode === 'multiplayer') deleteRoomRecord().catch(()=>{});   // in a lobby the listing just updates (sendRoster)
       sendRoster();
     }
     updateLobbyDisplay();
@@ -2744,6 +2756,7 @@ function sendRoster(){
   Object.keys(mpState.playerTeams).forEach(id => { const p=mpState.roomPlayers[id]||{}; roster.push({peerId:id,name:p.name||'Player',team:+mpState.playerTeams[id],ready:!!p.ready}); });
   broadcastToPlayers({type:'welcome', players, roster, maxPlayers:mpState.maxPlayers, soldiers:mpState.soldiersPerPlayer, mods:mpState.mods});
   updateLobbyDisplay();
+  updateRoomRecord();
 }
 
 function handleMultiplayerMessage(data, fromPeerId){
@@ -2798,6 +2811,13 @@ function handleMultiplayerMessage(data, fromPeerId){
   } else if(data.type === 'rematch_request'){
     if(mpState.isHost && mpState.mode === 'multiplayer') startMultiplayerHost();
   } else if(data.type === 'leave'){
+    if(mpState.isHost && mpState.mode === 'lobby'){
+      delete mpState.playerTeams[fromPeerId]; delete mpState.roomPlayers[fromPeerId];
+      try { mpState.connections[fromPeerId]?.close(); } catch(e){}
+      delete mpState.connections[fromPeerId];
+      sendRoster();
+      return;
+    }
     deleteRoomRecord().catch(()=>{});
     setMsg('Opponent left the room.', true);
     leaveMultiplayerRoom(false);
@@ -2857,6 +2877,7 @@ function startMultiplayerHost(){
   if(mpState.mode !== 'lobby' && !(mpState.mode === 'multiplayer' && (state === 'over' || state === 'waitResult'))) return;
   mpState.starting = true;
   mpState.resultSent = false;
+  deleteRoomRecord().catch(()=>{});   // a running match must not stay in the public list
   const seed = (realRandom() * 0xFFFFFFFF) >>> 0;
   const count = Math.max(2, Math.min(4, +mpState.maxPlayers || 2));
   const soldiers = Math.max(1, Math.min(5, +mpState.soldiersPerPlayer || 2));
@@ -2957,27 +2978,25 @@ let dbTested = false;
 async function testDbConnection(){
   if(dbTested && mpState.useDb) return true;
   try {
-    mpState.useDb = true; dbTested = true;
-    setMpStatus('✓ Multiplayer database ready', false);
+    const r = await roomApi('ping');          // really talks to the database (creates tables, checks schema)
+    mpState.useDb = true; dbTested = true; dbTableReady = true; window.lastDbError = '';
+    try { localStorage.setItem('graphwar_table_ok_v2', '1'); } catch(e){}
+    setMpStatus('✓ Multiplayer database ready · ' + (r.rooms || 0) + ' open room(s)', false);
     return true;
   } catch(e){
-    mpState.useDb = false;
+    mpState.useDb = false; dbTested = false; window.lastDbError = e.message;
     console.error(e);
-    setMpStatus('✗ Layerbase failed: ' + e.message, true);
+    setMpStatus('✗ Database: ' + e.message, true);
     return false;
   }
 }
 
 function normalizeRoom(r){
-  let players = r.players;
-  if(typeof players === 'string'){ try { players = JSON.parse(players); } catch(e){ players = [r.host]; } }
-  return {
-    code: r.code,
-    peerId: r.peer_id ?? r.peerId,
-    host: r.host,
-    created: Number(r.created),
-    players: players || [r.host]
-  };
+  let p = r.players;
+  if(typeof p === 'string'){ try { p = JSON.parse(p); } catch(e){ p = null; } }
+  const names = Array.isArray(p) ? p : ((p && p.p) || [r.host]);
+  const max = (p && !Array.isArray(p) && +p.m) || +r.max || 2;
+  return { code: r.code, peerId: r.peer_id ?? r.peerId, host: r.host, created: Number(r.created), players: names, max };
 }
 
 /* ---------- room storage: Layerbase if configured & working, else localStorage ---------- */
@@ -2998,6 +3017,15 @@ function saveRoomToLocalStorage(room){
   localStorage.setItem('graphwar_rooms', JSON.stringify(mpState.rooms));
 }
 
+let roomHb = null;
+// Keeps the public listing accurate (player count) and alive. Host only.
+async function updateRoomRecord(){
+  const code = mpState.roomCode, secret = mpState.roomSecret;
+  if(!mpState.isHost || !code || !secret || !mpState.useDb) return;
+  const names = [mpState.playerName, ...Object.keys(mpState.playerTeams).map(id => (mpState.roomPlayers[id] || {}).name || 'Player')];
+  try { await roomApi('update', {code, secret, players: names, max: mpState.maxPlayers}); } catch(e){ console.warn('Room update failed:', e); }
+}
+
 async function createRoom(){
   roomListAt = 0;
   const room = {
@@ -3011,12 +3039,15 @@ async function createRoom(){
     try {
       await ensureRoomsTable();
       // The server picks the room code and makes a secret that only this (host) client ever receives.
-      const r = await roomApi('create', {peer_id: room.peerId, host: room.host});
+      const r = await roomApi('create', {peer_id: room.peerId, host: room.host, max: mpState.maxPlayers});
       mpState.roomCode = r.code;
       mpState.roomSecret = r.secret;
+      clearInterval(roomHb);
+      roomHb = setInterval(() => { if(mpState.roomSecret && mpState.mode === 'lobby') updateRoomRecord(); else clearInterval(roomHb); }, 10*60*1000);
       return;
     } catch(e){
       console.error('DB insert failed, falling back to local:', e);
+      window.lastDbError = e.message;
       setMpStatus('✗ Could not save room to Layerbase — using local list', true);
       mpState.useDb = false;
     }
@@ -3084,35 +3115,101 @@ function updateLobbyDisplay(){
   }
 }
 
-async function displayRoomList(force){
-  const list = $('mpRoomList');
-  const statusEl = $('mpListStatus');
-  statusEl.textContent = mpState.useDb ? 'Loading rooms from Layerbase...' : 'Loading local rooms...';
-  list.innerHTML = '';
+async function displayRoomList(force, quiet){
+  const list = $('mpRoomList'), statusEl = $('mpListStatus');
+  if(!quiet){ statusEl.textContent = 'Loading rooms...'; list.innerHTML = ''; }
   let rooms = [];
-  try {
-    rooms = await fetchRoomList(force);
-  } catch(e){
-    console.error(e);
-  }
+  try { rooms = await fetchRoomList(force); } catch(e){ console.error(e); }
+  rooms = rooms.filter(r => (r.players || []).length < (r.max || 2));
   statusEl.textContent = mpState.useDb
-    ? '✓ Synced with Layerbase — visible to anyone using the same database'
-    : 'ℹ Multiplayer database unavailable — showing local rooms only.';
-  if(rooms.length === 0){
-    list.innerHTML = '<p class="mp-status">No rooms yet. Create one, or ask your opponent for their code.</p>';
+    ? '✓ Live from database · ' + rooms.length + ' open room(s) · refreshes automatically'
+    : '⚠ Database unavailable' + (window.lastDbError ? ' (' + window.lastDbError + ')' : '') + ' — showing rooms from this browser only';
+  list.innerHTML = '';
+  if(!rooms.length){
+    list.innerHTML = '<p class="mp-status">No open rooms right now. Create one, or wait here — this list refreshes by itself.</p>';
     return;
   }
   rooms.forEach(room => {
     const div = document.createElement('div');
     div.className = 'mp-room';
     const n = (room.players || []).length || 1;
-    div.innerHTML = `<b>${escHtml(room.code)}</b> - ${escHtml(room.host)} (${n} player${n===1?'':'s'})`;
-    div.onclick = () => {
-      $('mpJoinCode').value = room.code;
-      show('mMultiplayerJoin');
-    };
+    div.innerHTML = `<b>${escHtml(room.code)}</b> - ${escHtml(room.host)} (${n}/${room.max || 2})` + (room.code === mpState.roomCode ? ' · your room' : '');
+    div.onclick = () => { $('mpJoinCode').value = room.code; show('mMultiplayerJoin'); };
     list.appendChild(div);
   });
+}
+
+let roomListTimer = null;
+function stopRoomListPolling(){ clearInterval(roomListTimer); roomListTimer = null; }
+function startRoomListPolling(){
+  stopRoomListPolling();
+  roomListTimer = setInterval(async () => {
+    if($('mMultiplayerList').classList.contains('hide') || $('menu').classList.contains('hide')) return stopRoomListPolling();
+    if(document.hidden) return;
+    if(!mpState.useDb) await testDbConnection();
+    displayRoomList(true, true);
+  }, 6000);
+}
+
+/* ---------- public chat: one DB value (ver + last 40 msgs), full log kept client-side ---------- */
+const CHAT_KEY = 'graphwar_chat_log_v1', CHAT_KEEP = 300;
+let chatLog = (() => { try { const a = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}'); return {ver: +a.ver || 0, msgs: Array.isArray(a.msgs) ? a.msgs : []}; } catch(e){ return {ver: 0, msgs: []}; } })();
+let chatTimer = null, chatDelay = 4000, chatBusy = false, chatLastPost = 0;
+function chatRender(){
+  const el = $('mpChatLog'); if(!el) return;
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  el.textContent = '';
+  chatLog.msgs.slice(-80).forEach(m => {
+    const d = document.createElement('div'), t = document.createElement('span'), b = document.createElement('b');
+    t.className = 't'; t.textContent = new Date(m.t).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    b.textContent = m.n + ': ';
+    d.append(t, b, document.createTextNode(m.m)); el.appendChild(d);
+  });
+  if(stick) el.scrollTop = el.scrollHeight;
+}
+function chatMerge(ver, msgs){
+  const seen = new Set(chatLog.msgs.map(m => m.i)); let added = 0;
+  (msgs || []).forEach(m => { if(m && m.i && !seen.has(m.i)){ chatLog.msgs.push({i: String(m.i), t: +m.t || 0, n: String(m.n || 'Player'), m: String(m.m || '')}); added++; } });
+  chatLog.msgs.sort((a, b) => a.t - b.t); chatLog.msgs = chatLog.msgs.slice(-CHAT_KEEP); chatLog.ver = ver;
+  try { localStorage.setItem(CHAT_KEY, JSON.stringify(chatLog)); } catch(e){}
+  if(added) chatRender();
+  return added;
+}
+async function chatPoll(){
+  clearTimeout(chatTimer); chatTimer = null;
+  if($('mpChat').classList.contains('hide') || $('menu').classList.contains('hide')) return;
+  if(!document.hidden && !chatBusy){
+    chatBusy = true;
+    try {
+      const r = await roomApi('chat_get', {since: chatLog.ver});
+      $('mpChatStatus').textContent = '';
+      if(r.unchanged) chatDelay = Math.min(chatDelay * 1.25, 15000);
+      else { chatMerge(+r.ver || 0, r.messages); chatDelay = 4000; }
+    } catch(e){ $('mpChatStatus').textContent = 'Chat offline: ' + e.message; chatDelay = 15000; }
+    chatBusy = false;
+  }
+  chatTimer = setTimeout(chatPoll, chatDelay);
+}
+function chatSetActive(on){
+  $('mpChat').classList.toggle('hide', !on);
+  clearTimeout(chatTimer); chatTimer = null;
+  if(on){ chatRender(); chatDelay = 4000; chatPoll(); }
+}
+async function chatSend(){
+  const inp = $('mpChatInput'), text = inp.value.trim();
+  if(!text) return;
+  if(Date.now() - chatLastPost < 2000){ $('mpChatStatus').textContent = 'Slow down a little.'; return; }
+  chatLastPost = Date.now(); inp.value = '';
+  const name = ($('mpName').value || 'Player').trim().slice(0, 30) || 'Player';
+  const cid = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
+  try { await roomApi('chat_post', {name, text, cid}); $('mpChatStatus').textContent = ''; chatPoll(); }
+  catch(e){ $('mpChatStatus').textContent = 'Not sent: ' + e.message; inp.value = text; }
+}
+$('mpChatSend').onclick = chatSend;
+$('mpChatInput').addEventListener('keydown', e => { if(e.key === 'Enter') chatSend(); });
+function mpScreenChanged(id){
+  chatSetActive(['mMultiplayerSet', 'mMultiplayerList', 'mMultiplayerJoin', 'mMultiplayerLobby'].includes(id));
+  if(id === 'mMultiplayerList') startRoomListPolling(); else stopRoomListPolling();
 }
 
 /* ---------- main menu wiring ---------- */
@@ -3125,7 +3222,7 @@ async function displayRoomList(force){
   $('menuPanel').appendChild($('roster'));
 
   const screens = ['mMain', 'mPvbSet', 'mBvbSet', 'mMultiplayerSet', 'mMultiplayerList', 'mMultiplayerJoin', 'mMultiplayerLobby'];
-  window.show = id => screens.forEach(s => $(s).classList.toggle('hide', s !== id));
+  window.show = id => { screens.forEach(s => $(s).classList.toggle('hide', s !== id)); mpScreenChanged(id); };
   const openMenu = () => { menu.classList.remove('hide'); show('mMain'); setFS(false); };
   const closeMenu = () => menu.classList.add('hide');
 
@@ -3150,7 +3247,7 @@ async function displayRoomList(force){
     if(!el) return;
     el.textContent = 'Checking multiplayer database…';
     const ok = await testDbConnection();
-    el.textContent = ok ? '✓ Multiplayer database connected' : '✗ Multiplayer database unavailable';
+    el.textContent = ok ? '✓ Multiplayer database connected' : '✗ Multiplayer database unavailable: ' + (window.lastDbError || 'unknown error');
   }
   $('mMultiplayer').addEventListener('click', initMultiplayerDatabase);
 
@@ -3158,12 +3255,13 @@ async function displayRoomList(force){
     syncDbFieldsFromForm();
     show('mMultiplayerList');
     if(!mpState.useDb){ await testDbConnection(); }
-    displayRoomList(false);
+    displayRoomList(true);
   };
   let lastRefresh = 0;
   $('mpRefreshRooms').onclick = () => {
-    if(Date.now() - lastRefresh < 5000) return;   // 5s cooldown so nobody spams the API
-    lastRefresh = Date.now(); displayRoomList(true);
+    if(Date.now() - lastRefresh < 2000) return;
+    lastRefresh = Date.now();
+    (async () => { if(!mpState.useDb) await testDbConnection(); displayRoomList(true); })();
   };
   ['mpModSudden','mpModBlind','mpModRandom','mpModSpeed'].forEach(id => { const el=$(id); if(el) el.onchange=()=>{ mpState.mods={sudden:$('mpModSudden').checked, blind:$('mpModBlind').checked, random:$('mpModRandom').checked, speed:$('mpModSpeed').checked}; }; });
 
@@ -3180,6 +3278,7 @@ $('mMpCreateRoom').onclick = async () => {
     mpState.playerTeams = {}; mpState.roomPlayers = {};
     mpState.ready = false; mpState.remoteReady = false;
     await createRoom();                       // may replace roomCode with the server-issued one
+    $('mpLobbyWarn').textContent = mpState.roomSecret ? '' : '⚠ This room is NOT public: database unreachable' + (window.lastDbError ? ' (' + window.lastDbError + ')' : '') + '. Others cannot find or join it.';
     $('mpRoomCode').textContent = mpState.roomCode;
     updateLobbyDisplay();
     show('mMultiplayerLobby');
