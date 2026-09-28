@@ -9,6 +9,10 @@ import { randomBytes, createHash } from "node:crypto";
  *   get     { code }              one room (no secret)
  *   create  { peer_id, host }     makes a room, returns { code, secret } to its creator ONLY
  *   delete  { code, secret }      removes a room, only if the secret matches
+ *   update  { code, secret, players, max }  refreshes player list + room lifetime (host only)
+ *   ping                          init + schema check, returns { ok, rooms }
+ *   chat_get  { since }           public chat: one row holds { ver, last 40 msgs }; returns nothing if ver unchanged
+ *   chat_post { name, text, cid } appends one message to that row
  *
  * Every room gets its own random secret. Only a SHA-256 hash is stored, and the hash
  * column is never selected, so no endpoint can ever return it. The raw secret exists
@@ -20,6 +24,11 @@ const ROOM_TTL = 60 * 60 * 1000;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 const CODE_LEN = 6;
 const MAX_ACTIVE_ROOMS = 500;
+const CHAT = "graphwar_chat_v1";
+const CHAT_MAX = 40;
+const chatRate = new Map(); // best-effort per-instance spam limit
+const cleanChat = (v, max) => String(v ?? "").replace(/[\u0000-\u001f\u007f\\]/g, "").replace(/"/g, "'").replace(/\s+/g, " ").trim().slice(0, max);
+const parseMsgs = (t) => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : []; } catch { return []; } };
 
 const json = (res, status, data) => {
   res.statusCode = status;
@@ -54,6 +63,13 @@ const newCode = () => {
 const cutoff = (now) => Math.floor(now - ROOM_TTL);
 
 const Q = {
+  initChat: () => `CREATE TABLE IF NOT EXISTS ${CHAT} (id VARCHAR(16) PRIMARY KEY, ver BIGINT, data TEXT)`,
+  chatVer: () => `SELECT ver FROM ${CHAT} WHERE id = 'global' LIMIT 1`,
+  chatData: () => `SELECT ver, data FROM ${CHAT} WHERE id = 'global' LIMIT 1`,
+  chatInsert: (js) => `INSERT INTO ${CHAT} (id, ver, data) VALUES ('global', 1, ${lit(js)})`,
+  // Optimistic lock: only succeeds if nobody else bumped ver since we read it.
+  chatUpdate: (ver, js) => `UPDATE ${CHAT} SET ver = ${ver + 1}, data = ${lit(js)} WHERE id = 'global' AND ver = ${ver}`,
+  update: (code, h, players, now) => `UPDATE ${TABLE} SET players = ${lit(players)}, created = ${Math.floor(now)} WHERE code = ${lit(code)} AND secret_hash = ${lit(h)}`,
   init: () =>
     `CREATE TABLE IF NOT EXISTS ${TABLE} ` +
     `(code VARCHAR(8) PRIMARY KEY, peer_id TEXT, host TEXT, created BIGINT, players TEXT, secret_hash VARCHAR(64))`,
@@ -99,6 +115,7 @@ async function run(query) {
     console.error("Layerbase error", upstream.status, text.slice(0, 500));
     const err = new Error("Database error");
     err.upstream = true;
+    err.status = upstream.status;
     throw err;
   }
   try { return JSON.parse(text); } catch { return text; }
@@ -124,6 +141,9 @@ const publicRoom = (r) => ({
   created: Number(r.created),
   players: String(r.players)
 });
+
+// If the chat table does not exist yet (older deployments), create it once and retry.
+const chatSafe = async (fn) => { try { return await fn(); } catch { await run(Q.initChat()); return await fn(); } };
 
 /* ---------- request helpers ---------- */
 
@@ -161,9 +181,15 @@ export default async function handler(req, res) {
 
   try {
     switch (body.action) {
-      case "init": {
+      case "init":
+      case "ping": {
         await run(Q.init());
-        return json(res, 200, { ok: true });
+        await run(Q.initChat());
+        // An older table without secret_hash would make every create fail silently: repair it.
+        try { await run(`SELECT secret_hash FROM ${TABLE} LIMIT 1`); }
+        catch { await run(`ALTER TABLE ${TABLE} ADD COLUMN secret_hash VARCHAR(64)`); }
+        const n = Number(rowsOf(await run(Q.count(now)))[0]?.n ?? 0);
+        return json(res, 200, { ok: true, rooms: n });
       }
 
       case "list": {
@@ -189,7 +215,8 @@ export default async function handler(req, res) {
         }
 
         const secret = randomBytes(24).toString("hex"); // 48 hex chars, unique per room
-        const players = JSON.stringify([host]);
+        const max = Math.max(2, Math.min(4, Math.floor(Number(body.max)) || 2));
+        const players = JSON.stringify({ p: [host], m: max });
 
         // Codes are random; on the rare collision (primary key) retry with a new code.
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -212,11 +239,51 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true });
       }
 
+      case "update": {
+        if (!isCode(body.code) || !isSecret(body.secret) || !Array.isArray(body.players)) return json(res, 400, { error: "Bad request" });
+        const names = body.players.slice(0, 4).map((n) => clean(n, 30) || "Player");
+        const max = Math.max(2, Math.min(4, Math.floor(Number(body.max)) || 2));
+        await run(Q.update(body.code, hashSecret(body.secret), JSON.stringify({ p: names, m: max }), now));
+        return json(res, 200, { ok: true });
+      }
+
+      case "chat_get": {
+        const since = Number(body.since) || 0;
+        const first = await chatSafe(() => run(Q.chatVer()));
+        const ver = Number(rowsOf(first)[0]?.ver ?? 0);
+        if (ver === since || !rowsOf(first).length) return json(res, 200, { ver, unchanged: true });
+        const row = rowsOf(await run(Q.chatData()))[0];
+        return json(res, 200, { ver: Number(row?.ver ?? ver), messages: parseMsgs(row?.data) });
+      }
+
+      case "chat_post": {
+        const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "?";
+        if (now - (chatRate.get(ip) || 0) < 2000) return json(res, 429, { error: "Slow down" });
+        chatRate.set(ip, now);
+        if (chatRate.size > 500) chatRate.clear();
+        const text = cleanChat(body.text, 200);
+        const name = cleanChat(body.name, 30) || "Player";
+        if (!text || typeof body.cid !== "string" || !/^[A-Za-z0-9]{8,24}$/.test(body.cid)) return json(res, 400, { error: "Bad message" });
+        const msg = { i: body.cid, t: now, n: name, m: text };
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const row = rowsOf(await chatSafe(() => run(Q.chatData())))[0];
+          if (!row) { try { await run(Q.chatInsert(JSON.stringify([msg]))); return json(res, 200, { ok: true, ver: 1 }); } catch { continue; } }
+          const ver = Number(row.ver);
+          const msgs = parseMsgs(row.data);
+          if (msgs.some((x) => x.i === msg.i)) return json(res, 200, { ok: true, ver });
+          msgs.push(msg);
+          await run(Q.chatUpdate(ver, JSON.stringify(msgs.slice(-CHAT_MAX))));
+          const chk = rowsOf(await run(Q.chatData()))[0];
+          if (parseMsgs(chk?.data).some((x) => x.i === msg.i)) return json(res, 200, { ok: true, ver: Number(chk.ver) });
+        }
+        return json(res, 409, { error: "Chat busy, try again" });
+      }
+
       default:
         return json(res, 400, { error: "Unknown action" });
     }
   } catch (err) {
-    if (err && err.upstream) return json(res, 502, { error: "Database error" });
+    if (err && err.upstream) return json(res, 502, { error: "Database error", detail: err.status ? "upstream " + err.status : undefined });
     console.error("Proxy error", err && err.name);
     return json(res, 502, { error: "Database server unreachable" });
   }
