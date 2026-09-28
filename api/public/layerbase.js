@@ -11,8 +11,8 @@ import { randomBytes, createHash } from "node:crypto";
  *   delete  { code, secret }      removes a room, only if the secret matches
  *   update  { code, secret, players, max }  refreshes player list + room lifetime (host only)
  *   ping                          init + schema check, returns { ok, rooms }
- *   chat_get  { since }           public chat: one row holds { ver, last 40 msgs }; returns nothing if ver unchanged
- *   chat_post { name, text, cid } appends one message to that row
+ *   chat_get  { code, since }     room chat: one row per room holds { ver, last 40 msgs }; returns nothing if ver unchanged
+ *   chat_post { code, name, text, cid } appends one message to that room's row (room must exist)
  *
  * Every room gets its own random secret. Only a SHA-256 hash is stored, and the hash
  * column is never selected, so no endpoint can ever return it. The raw secret exists
@@ -60,15 +60,20 @@ const newCode = () => {
   return out;
 };
 
+const chatId = (code) => "room:" + code;
 const cutoff = (now) => Math.floor(now - ROOM_TTL);
 
 const Q = {
   initChat: () => `CREATE TABLE IF NOT EXISTS ${CHAT} (id VARCHAR(16) PRIMARY KEY, ver BIGINT, data TEXT)`,
-  chatVer: () => `SELECT ver FROM ${CHAT} WHERE id = 'global' LIMIT 1`,
-  chatData: () => `SELECT ver, data FROM ${CHAT} WHERE id = 'global' LIMIT 1`,
-  chatInsert: (js) => `INSERT INTO ${CHAT} (id, ver, data) VALUES ('global', 1, ${lit(js)})`,
+  // Chat rows are keyed per room: id = "room:" + code (11 chars, fits VARCHAR(16)). The code is validated by isCode() first.
+  chatVer: (code) => `SELECT ver FROM ${CHAT} WHERE id = ${lit(chatId(code))} LIMIT 1`,
+  chatData: (code) => `SELECT ver, data FROM ${CHAT} WHERE id = ${lit(chatId(code))} LIMIT 1`,
+  chatInsert: (code, js) => `INSERT INTO ${CHAT} (id, ver, data) VALUES (${lit(chatId(code))}, 1, ${lit(js)})`,
   // Optimistic lock: only succeeds if nobody else bumped ver since we read it.
-  chatUpdate: (ver, js) => `UPDATE ${CHAT} SET ver = ${ver + 1}, data = ${lit(js)} WHERE id = 'global' AND ver = ${ver}`,
+  chatUpdate: (code, ver, js) => `UPDATE ${CHAT} SET ver = ${ver + 1}, data = ${lit(js)} WHERE id = ${lit(chatId(code))} AND ver = ${ver}`,
+  // Chat cleanup: drop a room's chat once the room row is gone, and sweep orphaned chats.
+  chatDrop: (code) => `DELETE FROM ${CHAT} WHERE id = ${lit(chatId(code))} AND NOT EXISTS (SELECT 1 FROM ${TABLE} WHERE code = ${lit(code)})`,
+  chatSweep: () => `DELETE FROM ${CHAT} WHERE id LIKE 'room:%' AND SUBSTR(id, 6) NOT IN (SELECT code FROM ${TABLE})`,
   update: (code, h, players, now) => `UPDATE ${TABLE} SET players = ${lit(players)}, created = ${Math.floor(now)} WHERE code = ${lit(code)} AND secret_hash = ${lit(h)}`,
   init: () =>
     `CREATE TABLE IF NOT EXISTS ${TABLE} ` +
@@ -210,6 +215,7 @@ export default async function handler(req, res) {
         // Occasional cleanup of expired rooms + a global cap so the table can't be flooded.
         if (Math.random() < 0.2) {
           await run(Q.sweep(now)).catch(() => {});
+          await run(Q.chatSweep()).catch(() => {});
           const n = Number(rowsOf(await run(Q.count(now)).catch(() => []))[0]?.n ?? 0);
           if (n >= MAX_ACTIVE_ROOMS) return json(res, 429, { error: "Too many active rooms, try again soon" });
         }
@@ -236,6 +242,7 @@ export default async function handler(req, res) {
         if (!isCode(body.code) || !isSecret(body.secret)) return json(res, 400, { error: "Bad request" });
         // Wrong secret = no row matches = nothing happens (and the caller can't tell why).
         await run(Q.remove(body.code, hashSecret(body.secret)));
+        await run(Q.chatDrop(body.code)).catch(() => {}); // only drops if the room row is really gone
         return json(res, 200, { ok: true });
       }
 
@@ -248,15 +255,17 @@ export default async function handler(req, res) {
       }
 
       case "chat_get": {
+        if (!isCode(body.code)) return json(res, 400, { error: "Bad room code" });
         const since = Number(body.since) || 0;
-        const first = await chatSafe(() => run(Q.chatVer()));
+        const first = await chatSafe(() => run(Q.chatVer(body.code)));
         const ver = Number(rowsOf(first)[0]?.ver ?? 0);
         if (ver === since || !rowsOf(first).length) return json(res, 200, { ver, unchanged: true });
-        const row = rowsOf(await run(Q.chatData()))[0];
+        const row = rowsOf(await run(Q.chatData(body.code)))[0];
         return json(res, 200, { ver: Number(row?.ver ?? ver), messages: parseMsgs(row?.data) });
       }
 
       case "chat_post": {
+        if (!isCode(body.code)) return json(res, 400, { error: "Bad room code" });
         const ip = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || "?";
         if (now - (chatRate.get(ip) || 0) < 2000) return json(res, 429, { error: "Slow down" });
         chatRate.set(ip, now);
@@ -264,16 +273,18 @@ export default async function handler(req, res) {
         const text = cleanChat(body.text, 200);
         const name = cleanChat(body.name, 30) || "Player";
         if (!text || typeof body.cid !== "string" || !/^[A-Za-z0-9]{8,24}$/.test(body.cid)) return json(res, 400, { error: "Bad message" });
+        // Only real, live rooms can have a chat (stops anyone creating chat rows for made-up codes).
+        if (!rowsOf(await run(Q.get(body.code, now))).length) return json(res, 404, { error: "Room not found" });
         const msg = { i: body.cid, t: now, n: name, m: text };
         for (let attempt = 0; attempt < 4; attempt++) {
-          const row = rowsOf(await chatSafe(() => run(Q.chatData())))[0];
-          if (!row) { try { await run(Q.chatInsert(JSON.stringify([msg]))); return json(res, 200, { ok: true, ver: 1 }); } catch { continue; } }
+          const row = rowsOf(await chatSafe(() => run(Q.chatData(body.code))))[0];
+          if (!row) { try { await run(Q.chatInsert(body.code, JSON.stringify([msg]))); return json(res, 200, { ok: true, ver: 1 }); } catch { continue; } }
           const ver = Number(row.ver);
           const msgs = parseMsgs(row.data);
           if (msgs.some((x) => x.i === msg.i)) return json(res, 200, { ok: true, ver });
           msgs.push(msg);
-          await run(Q.chatUpdate(ver, JSON.stringify(msgs.slice(-CHAT_MAX))));
-          const chk = rowsOf(await run(Q.chatData()))[0];
+          await run(Q.chatUpdate(body.code, ver, JSON.stringify(msgs.slice(-CHAT_MAX))));
+          const chk = rowsOf(await run(Q.chatData(body.code)))[0];
           if (parseMsgs(chk?.data).some((x) => x.i === msg.i)) return json(res, 200, { ok: true, ver: Number(chk.ver) });
         }
         return json(res, 409, { error: "Chat busy, try again" });
