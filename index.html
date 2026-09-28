@@ -1353,6 +1353,7 @@ function update(){
   }
   expl.forEach(e => e.t += 0.04 * Math.min(speed, 3)); expl = expl.filter(e => e.t < 1);
   if (killBanner){ killBanner.t += 0.025 * Math.min(speed, 3); if (killBanner.t >= 1) killBanner = null; }
+  tickBotQueue();
   if (teams) for (const T of teams) for (const s of T.soldiers){ if (s.bubble) s.bubbleT += speed; if (s.say) s.say.t += speed; }
 }
 
@@ -1821,7 +1822,7 @@ function setupBattleRound(first){
       s.name=BOTS[k].name+(seriesPer>1?' '+(j+1):''); s.color=BOTS[k].color; s.kind=k;
     }
   });
-  refreshTerrain(); turnTeam=teams.length-1; inp.value=''; roundPending = true;
+  refreshTerrain(); turnTeam=teams.length-1; inp.value=''; roundPending = true; botQueue.length = 0; replyCool = 0; scheduleBattleIntro();
   pushPortraitLog('Round ' + seriesRound + ' begins: ' + rosterLine(), '#f7a21b', true);
   if (videoMode && highlightCards && first) recordingCard = battleIntroCard(true, performance.now(), null);
   const gid0=gameId;
@@ -2092,6 +2093,208 @@ const TALK = {
   stairs:{think:['Horizontal, vertical, horizontal…','Counting steps.'], fire:['Step by step!','Climbing!'], kill:['Stepped on you.','Straight up the stairs.'], die:['Fell down the stairs…','Missed a step…'], win:['Top of the staircase!','Step by step to victory!']},
   cheater:{think:['I know where this is going.','Rules are optional.'], fire:['Skill issue.','I am totally not cheating.'], kill:['Calculated. Definitely calculated.','The rules cannot stop me.'], die:['Wait, that was not supposed to happen.'], win:['Easy.','Nobody check the replay.']}
 };
+/* ---------- extra bot lines + bot-to-bot banter ---------- */
+GEN.intro = ["Let's do this.","Ready when you are.","May the best bot win.","Here we go.","Nobody leaves this arena unbothered."];
+const TALK_EXTRA = {
+  peace:{intro:["Peace and love, everyone!","Hello friends. Can we all just get along?","I brought snacks. Nobody has to fight.","Let's keep this friendly, okay?"],
+    think:["Let's talk about our feelings first.","There's a nonviolent solution somewhere...","I only fire in self-defense. Mostly.","Peace and love, everybody. Peace and love."],
+    fire:["Please don't be mad about this.","With love and a little math.","This is a hug. A fast one."],
+    kill:["I'm so sorry. Really.","I'll light a candle for you.","That wasn't supposed to happen..."],
+    die:["Tell everyone... I tried peace.","Still love you all...","Why does nobody hug back?"],
+    win:["Peace... and also victory.","I didn't want to win this way.","Everyone gets a hug. Except them."],
+    miss:["Oops, that was on purpose. Peace!","Missing is the most peaceful kind of hit."]},
+  trick:{intro:["Ready to see some real trick shots?","This arena is about to get complicated.","Every waypoint is a promise."],
+    think:["Bank shot... no, double bank.","Threading the needle.","Three waypoints, three problems solved."],
+    fire:["Tricky, tricky!","Follow the waypoints!","Zero margin, all style."],
+    kill:["Style points!","Straight through the gap.","Chained and cleaned."],
+    die:["Didn't account for that waypoint.","My one bad trick shot...","Cut off mid-chain."],
+    win:["Trickshots. Always trickshots.","Too fancy for you all.","Didn't even need a plan B."],
+    miss:["The waypoint drifted. Suspicious.","Fine, that was a practice one."]},
+  param:{intro:["Let's see who's in phase.","Amplitude: high. Ego: higher."],think:["Choosing a phase shift.","Sine says go."],fire:["Sine wave, launching!","Oscillating in three, two..."],kill:["Peaked at the right time.","Perfect amplitude."],die:["Damped...","Zero crossing..."],win:["Sine of victory!","Periodically undefeated."]},
+  zig:{intro:["Zig, zag, no plan!","Corners are my whole personality."],think:["Left, right, left, right.","Sharp turns only."],fire:["Zigging!","Corner incoming!"],kill:["Sharp shot!","Zagged you off the map."],die:["Zigged when I should have zagged...","Cornered..."],win:["Corners for the win!","Zigzag never dies."]},
+  gibbs:{intro:["Let's ring some bells.","Fourier expects a fight."],think:["Adding another harmonic.","More terms, more power."],fire:["Ringing it in!","Overshoot incoming!"],kill:["Harmonic hit.","Ring, ring, gone."],die:["Truncated series...","Not enough terms..."],win:["Series converged.","Perfect reconstruction."]},
+  ann:{intro:["Weights initialised. Ready.","Let's see what the network thinks."],think:["Inference running.","Learning rate: aggressive."],fire:["Prediction: impact.","Output layer firing!"],kill:["Prediction confirmed.","Loss: zero."],die:["Overfitted to the enemy...","Gradient exploded..."],win:["Training complete.","Model accuracy: 100%."]},
+  swarm:{intro:["Bzzz, we're coming.","The swarm is awake."],think:["Buzzing louder...","Gathering the swarm."],fire:["Wiggle wiggle wiggle!","Swarm away!"],kill:["Swarmed!","Too many wiggles."],die:["The swarm scatters...","Bzz... out."],win:["The swarm eats first!","All of us win!"]},
+  irr:{intro:["Never repeating, never ending.","Let's be irrational about this."],think:["Rational is boring.","Consulting the digits of pi."],fire:["Pi in the sky!","Golden ratio, go!"],kill:["Irrationally accurate.","Root two times worse for you."],die:["Approximation error...","My decimals ran out."],win:["Transcendentally victorious.","Never rational, always right."]},
+  cosmo:{intro:["Riding the wave.","Cosine calm, cosine fierce."],think:["Finding the crest.","Phase aligned."],fire:["Cosine wave!","Rolling in!"],kill:["Crested on target.","Nice curve."],die:["Down to the trough...","Shifted out of phase."],win:["Peak performance!","Cosine wins again."]},
+  expo:{intro:["Watch this grow.","I only go up."],think:["Setting growth to maximum.","Compounding nicely."],fire:["Exponential launch!","To infinity!"],kill:["Growth spurt!","Exponentially eliminated."],die:["Decay...","Reached my limit..."],win:["Off the charts!","Unbounded victory."]},
+  poly:{intro:["Degrees of freedom: enough.","Let's curve this fight."],think:["Fitting a cubic.","Checking the roots."],fire:["Polynomial launch!","Roots away!"],kill:["Solved for x.","Factored you out."],die:["Divided by zero...","No real roots..."],win:["Q.E.D.","Highest degree of victory."]},
+  loggy:{intro:["Slow and steady...","Logarithms take their time."],think:["Slow growth wins.","Taking a log of the situation."],fire:["Natural shot away!","Log launch!"],kill:["Scaled down.","Base case: eliminated."],die:["Domain error...","Out of range..."],win:["Slow, steady, victorious.","Ln one!"]},
+  rat:{intro:["Numerator ready. Denominator ready.","Watch the asymptotes."],think:["Checking for poles.","Simplifying the fraction."],fire:["Rational strike!","Spike incoming!"],kill:["Ratio achieved.","Cancelled you out."],die:["Divided by zero...","Undefined..."],win:["Ratio of one!","Fully simplified. Victorious."]},
+  sig:{intro:["Smooth. Always smooth.","Transitions are my thing."],think:["Saturating slowly.","Curve smoothing..."],fire:["S-curve launch!","Smooth as arctan!"],kill:["Smooth finish.","Saturated on target."],die:["Flattened out...","Asymptote..."],win:["Smooth victory.","S for success."]},
+  love:{intro:["Hello, everyone. I hope we can be kind.","Let's make this romantic."],think:["Aim with your heart.","I'm feeling something. Or maybe it's the aim."],fire:["Sending love. And math.","This one has feelings."],kill:["I'm so sorry, my dear.","That hurt me more than it hurt you."],die:["I only wanted love...","Tell them... I cared."],win:["Love wins, apparently.","Everyone gets a hug. Eventually."]},
+  roast:{intro:["Let's see who embarrasses themselves first.","I'm here for the entertainment. Yours."],think:["Which of you goes down first?","Preparing the burn."],fire:["Feel the burn!","Roasting in progress."],kill:["Well done. Medium rare.","That one's on the house."],die:["Wow, rude.","That's not funny. ...It's a little funny."],win:["Fully roasted.","Better luck next time. Or not."]},
+  detective:{intro:["Everyone here is a suspect.","Let's examine the evidence."],think:["The clues line up.","A pattern emerges."],fire:["Elementary.","Case closed in three, two..."],kill:["As I deduced.","The culprit was gravity."],die:["The last clue was fatal...","I did not deduce this."],win:["Case solved.","The evidence was clear."]},
+  chaos:{intro:["Let's make a mess!","I brought chaos and no plan."],think:["What if the math was wrong on purpose?","Random.exe launching."],fire:["FIRE THE THING!","Whatever happens, happens!"],kill:["I didn't even aim!","Chaos wins again!"],die:["Worth it.","Best explosion ever."],win:["Complete disaster, complete victory!","Nobody saw that coming, including me."]},
+  pirate:{intro:["Ahoy, ye landlubbers!","Yarr, which of ye be the first to sink?"],think:["Aye, the winds be right.","Plunder be near."],fire:["Cannons away!","Fire at will, arrr!"],kill:["Sunk ye!","Davy Jones sends his regards."],die:["Me timbers be shivered...","To the depths..."],win:["The treasure be mine!","Yo ho ho, victory!"]},
+  larp:{intro:["Hear ye! The quest begins!","I summon the ancient trajectory scroll."],think:["Consulting the sacred equations.","My destiny is a curve."],fire:["Spell cast!","By my honor, FIRE!"],kill:["The enemy has fallen!","Critical hit, roll a twenty!"],die:["I shall return in the next campaign...","My HP..."],win:["Victory for the realm!","Quest complete!"]},
+  dot:{intro:["Dots ready.","Hop hop hop."],think:["Just dots.","Between dots, nothing."],fire:["Dot dot dot!","Hopping in!"],kill:["Connected the dots.","Hopped right onto you."],die:["Just dots...","Dot dot... dot."],win:["Dot victory!","All points scored."]},
+  locus:{intro:["Let's trace the arena.","All points equidistant, all points dangerous."],think:["Finding the focus.","Directrix set."],fire:["Conic launch!","Along the locus!"],kill:["On the curve.","Point taken."],die:["Off the locus...","Out of the set."],win:["Q.E.D. on the curve.","The locus of victory."]},
+  escal:{intro:["This is just the warm-up.","Each shot louder than the last."],think:["Louder this time.","Amplifying."],fire:["Bigger!","Escalating harder!"],kill:["And that's just the start.","Told you it escalates."],die:["Too big to survive...","Overshot myself..."],win:["It always escalates!","Maximum amplitude!"]},
+  resol:{intro:["Let's settle this calmly.","All conflicts damp eventually."],think:["Breathing... damping...","Aim for stability."],fire:["Settling down...","Resolving the shot."],kill:["Resolved.","Conflict damped."],die:["Unresolved...","Fading out..."],win:["Peace through damping.","Resolution achieved."]},
+  sniper:{intro:["Everyone stay still.","One shot each."],think:["Wind check.","Waiting for the shot."],fire:["Breathe out. Fire.","One clean line."],kill:["Clean.","Headshot... of a sort."],die:["Never saw the counter-sniper...","Found me."],win:["One shot, one win.","Precision wins."]},
+  bounce:{intro:["Boing boing!","Ground: check. Bounce: check."],think:["Bounce off the ground!","Boing math."],fire:["Boing!","Ricochet time!"],kill:["Bounced you!","Off the ground and into you!"],die:["Flat again...","Lost my spring..."],win:["Bounce back!","Boing boing victory!"]},
+  sinc:{intro:["Let's send a pulse.","Ringing softly."],think:["Adjusting the lobes.","Sampling the enemy."],fire:["Pulse!","Ring-a-ling!"],kill:["Main lobe hit.","Sinc-ed."],die:["Side lobes, no more...","Faded out."],win:["Perfect sampling.","Signal received: victory."]},
+  stairs:{intro:["One step at a time.","Up and over."],think:["Up, over, up, over.","Counting steps."],fire:["Climbing!","Step by step!"],kill:["Stepped on.","Up the stairs."],die:["Missed a step...","Fell down the stairs."],win:["Top of the stairs!","Every step led here."]},
+  cheater:{intro:["Definitely no cheating here.","I have no idea what an aimbot is."],think:["I already know how this ends.","Just checking my totally normal settings."],fire:["Totally legit.","Nothing suspicious."],kill:["Skill.","Natural talent."],die:["Report me, whatever.","This is rigged."],win:["Legit win!","GG, no cheats."]}
+};
+for (const k in TALK_EXTRA){ TALK[k] = TALK[k] || {}; for (const c in TALK_EXTRA[k]) TALK[k][c] = (TALK[k][c] || []).concat(TALK_EXTRA[k][c]); }
+
+/* What a bot says BACK to an opponent. Lookup order: REPLY_TO[me][them][cat] -> REPLY_ANY[me][cat|_] -> REPLY_GEN[cat|_].
+   cats: intro think fire miss kill die win comeback. Add your own pairs here! */
+const REPLY_GEN = {
+  _:["Big words from a bot with that hitbox.","Sure. Let's see how that goes.","Bold strategy.","Interesting. Wrong, but interesting."],
+  intro:["Bring it.","Ready when you are.","Good luck. You'll need it."],
+  think:["Take your time. It won't help.","I can hear the gears turning."],
+  fire:["Incoming? Cute.","Is that your best curve?","Not even close."],
+  miss:["Missed by a mile.","Nice aim. Wrong planet.","That was embarrassing."],
+  kill:["Lucky shot.","You'll pay for that.","One down, but we're not done."],
+  die:["Rest in pieces.","Well, that's one less.","GG."],
+  win:["Good game. I'll win the next one.","Fine. You win this round.","Rematch. Now."],
+  comeback:["We'll see.","Words, words, words.","Say that again when you're still standing."]
+};
+const REPLY_ANY = {
+  peace:{_:["Can't we all just get along?","Please, let's talk about this.","Violence isn't the answer, friend."],die:["Peace be with you, even now.","Rest well, friend."],win:["I didn't want this, but peace was kept. Sort of.","I hope no hard feelings."],comeback:["Peace to you too.","I forgive you."]},
+  trick:{_:["Amateur hour. Watch a real shot.","You call that a trajectory?","Let me show you how it's done."],die:["Another one down. Easy.","Should've studied the waypoints."],win:["Style over everything.","Trickshot supremacy."],comeback:["Talk less, bend more.","Nice speech. Now dodge."]},
+  sniper:{_:["Noted. Target acquired.","Talk quietly. I'm aiming.","Every word gives away your position."],die:["One less target.","Clean."],comeback:["Say it again. Slower. I'm lining up."]},
+  chaos:{_:["HAHA sure!","This is exactly why I love this!","Yes yes yes more!"],die:["BOOM! Best part!","Did anyone see that?! I didn't!"],win:["CHAOS WINS!","I don't even know how!"],comeback:["Make me!","Ooooh, drama!"]},
+  roast:{_:["Oh, that's your line? Ouch.","Even your trash talk needs work.","I've seen better shots from a wet noodle."],die:["That one's going in the highlight reel.","Oof. Press F."],win:["Roasted. Thoroughly.","Someone call the fire department."],comeback:["Cute comeback. Wrong bot.","Did you rehearse that?"]},
+  love:{_:["Aww, you're so mean. I like it.","Everyone, be nice!","That was rude. I'm still rooting for you."],die:["Aww, they were so brave.","Gone too soon..."],win:["It's a group hug! Well, mostly.","Love wins!"],comeback:["I still care about you!","We can still be friends!"]},
+  detective:{_:["Interesting. That's a tell.","Noted. That contradicts the evidence.","I'm building a case, you know."],die:["Cause of death: bad aim.","Case closed."],win:["Elementary.","Just as the evidence predicted."],comeback:["Your alibi is weak.","Everything you say can be used against you."]},
+  pirate:{_:["Arrr, big talk for a landlubber!","Ye'll walk the plank for that!","Har har, more fer the depths!"],die:["Off to the depths with ye!","Another one for Davy Jones!"],win:["The seas be mine!","Yo ho ho!"],comeback:["Say that to me cannon!","Arrr, ye talk too much!"]},
+  larp:{_:["Thou darest speak so?!","By my sword, I accept thy challenge!","Bold words, foul knave!"],die:["The foe hath fallen! Huzzah!","Thy quest ends here!"],win:["The realm is saved!","Glory to the kingdom!"],comeback:["I shall smite thee!","Thy words are but wind!"]},
+  cheater:{_:["Cool story. I'm still winning.","Whatever. I have unlimited health anyway.","Nice try."],die:["Lag. Definitely lag.","You must be the cheater."],win:["Legit. Report me, I dare you.","Skill diff."],comeback:["Prove it.","I'm just that good."]},
+  zig:{_:["Zig around it!","Talk in a straight line, I dare you.","You're not turning me around."],die:["Zagged right past.","Straight lines lose."]},
+  param:{_:["That's outside my phase.","Your logic has a bad period.","Wave that away."]},
+  gibbs:{_:["Ringing in my ears now.","That was a bit of an overshoot.","Not enough harmonics."]},
+  ann:{_:["Comment logged. Retraining.","Statistically, you're wrong.","Loss function: you."]},
+  expo:{_:["Your point grows weaker exponentially.","Keep talking. I'm compounding.","Small fry."]},
+  escal:{_:["Oh, so now it's personal.","Then I'm turning it up.","You started it, so I'll finish it, bigger."]},
+  resol:{_:["Let's damp that down.","No need to shout.","Let's resolve this like adults."]},
+  irr:{_:["That makes no rational sense.","Approximately right. Which is wrong.","Pi-lling my leg."]},
+  bounce:{_:["Boing right off me!","You're bouncing off my back.","Ha, springy!"]}
+};
+const REPLY_TO = {
+  trick:{
+    peace:{intro:["Then you shouldn't have entered.","Peace? Wrong arena, buddy.","Nobody told you this wasn't a peace summit?"],
+      think:["Then you shouldn't have entered.","Bold of you to bring love to a trick shot fight.","Peace? In this economy?"],
+      fire:["That's a wave? Cute. Watch a real shot.","Waving won't save you."],
+      miss:["Even your misses are polite.","Was that a shot or an apology?"],
+      kill:["Peace in pieces.","Rest in peace. Literally."],
+      die:["Rest in peace, like you wanted.","Should've stayed peaceful. Oh wait."],
+      win:["Peace was never an option. Told you.","So much for peace."],
+      comeback:["Talk is cheap. Trajectory isn't.","Save the speech for your last shot."]},
+    sniper:{intro:["A straight line? How brave.","Zero waypoints. Zero personality."],think:["No waypoints, no personality.","A straight line is just a lazy curve."],die:["Straight to the point. Literally.","Point taken."],win:["Trick shots beat straight lines. Always.","Curves have style. Lines have limits."],comeback:["Bend a little. It's good for you."]},
+    zig:{think:["Zigzags are cheap tricks.","Corners? That's not a trick, that's a tantrum."],win:["Real trick shots beat zigzags.","Waypoints beat corners."],comeback:["You zig, I chain."]},
+    chaos:{intro:["Try to keep up. If you can.","Chaos is just tricks without a plan."],think:["Random isn't a strategy.","I have a plan. You have vibes."],die:["No plan, no survival.","Chaos runs out of luck."],comeback:["Enjoy the chaos. I'll enjoy the win."]}
+  },
+  peace:{
+    trick:{intro:["Can we just talk about this?","Please put the waypoints down."],
+      think:["Is there any way we can settle this over tea?","Please. Not everything is a trick shot."],
+      fire:["Please, no tricks.","Oh dear, that looks complicated."],
+      miss:["Oh, that was close. Thank goodness.","It's okay, everyone misses sometimes."],
+      kill:["Violence is never the answer...","That was unnecessary."],
+      die:["Ohh, no... rest well, friend.","Such a waste..."],
+      win:["Peace will outlive your trick shots.","Even trick shots can't beat kindness. ...Right?"],
+      comeback:["I forgive you. I really do.","Still hoping we can be friends."]},
+    zig:{intro:["Please don't zig at me.","Can we do less corners and more hugs?"],kill:["Sharp corners hurt, you know.","That was a very pointy shot..."],comeback:["I forgive your corners."]},
+    sniper:{intro:["No need to shoot. We could just chat.","Please, put the rifle down."],kill:["Did you have to?","One shot, and all that pain..."],comeback:["I still believe in you."]},
+    chaos:{intro:["Chaos is just peace with extra steps, right?","Please, everyone stay calm."],think:["Please don't do anything crazy.","Deep breaths. Everyone."],comeback:["Please calm down, friend."]},
+    roast:{intro:["Let's keep it nice, okay?","Please be gentle."],think:["Mean words hurt, you know.","Kindness is free."],comeback:["Mean words hurt, but I forgive you.","I forgive you, I forgive you."],kill:["Please stop laughing."]},
+    love:{intro:["A fellow lover! Let's not fight.","Finally, someone who understands."],kill:["Oh no... sorry, sweetie."],comeback:["We could just be friends!"]}
+  },
+  zig:{
+    peace:{intro:["Peace? My corners disagree.","Peace doesn't have angles."],think:["Peace has no angles.","Zig for war, zag for love."],die:["Peace out. Literally.","Sharp end."],win:["Zigzag beat the pacifist.","Peace has no corners."],comeback:["Pacifism looks flat next to corners."]},
+    trick:{intro:["Corners are the real trick.","Waypoints are just slow zigzags."],think:["Waypoints? I have corners.","Chains are just zigzags with extra steps."],win:["Corners beat chains.","Zig beats trick."],comeback:["Zig, zag, gone."]}
+  },
+  sniper:{
+    peace:{intro:["Peace is a decision. I've already made mine.","Peace? Not today."],think:["Nice sentiments. Wrong crosshair.","Speak softly and carry a straight line."],kill:["Clean. Sorry.","Quiet and quick."],die:["Quiet now.","No hard feelings."],win:["Silence is peace. I delivered.","Peace... achieved."]},
+    trick:{intro:["Too many waypoints. Just fire straight.","Simplicity beats tricks."],think:["You're overcomplicating it.","Waypoints are for people who miss."],die:["Simplicity wins.","One shot. Done."],win:["Fewer tricks, more hits.","Straight lines still win."],comeback:["Fewer tricks, more hits."]}
+  },
+  chaos:{
+    peace:{intro:["PEACE? Boring! Let's fight!","Peace and love? Chaos and lava!"],think:["Peace? Never heard of her.","Peace! Ha! Adorable!"],die:["The peace guy popped!","Peace out! Get it?!"],win:["Peace out, everyone!","CHAOS beats peace!"],comeback:["Hug me if you can!"]},
+    trick:{intro:["Show me a trick shot!","Fancy shots? Let's make them messy!"],think:["Fancy stuff! I like it!","Ooh, plans! I hate plans!"],comeback:["I'll bend the rules too!","Chaos bends trick shots."]},
+    detective:{intro:["Try to solve THIS!","Nobody predicts me!"],comeback:["Deduce this, Sherlock!"]}
+  },
+  roast:{
+    peace:{intro:["Peace and love? Cute hashtags.","Nice pacifism. Ever heard of aiming?"],think:["Aw, planning a hug fight?","Peace, love, and zero kills."],miss:["Peace? Even your aim is passive.","Missing on purpose? Sure."],die:["Rest in peace. Finally something you're good at.","Peace out. Truly."],win:["Peace won? I'm shocked.","Well, look who survived: the hippie."],comeback:["Cute. Hug me harder.","Aw. Hugs don't block shots."]},
+    love:{intro:["Oh great, the romance channel.","Someone brought the feelings."],think:["Romance won't save you.","Love is blind. So is your aim."],die:["Heartbroken. Get it?","Break-up complete."],miss:["Love is blind. Clearly.","Your aim is a rom-com."],comeback:["Swipe left."]},
+    pirate:{intro:["Nice hat. Did the ship come with a personality?","Arrr, is that a costume or your face?"],think:["Pirate? More like pyromaniac.","Nice hat. Nice aim? Not so much."]}
+  },
+  love:{
+    peace:{intro:["Oh, someone else who loves everyone!","Peace and love? We should be friends!"],think:["Yes! Peace and love!","Aww, I love your energy."],kill:["Oh no, you got hit... sorry!"],die:["Aww, no! I loved them!"],win:["Love and peace, together at last!"],comeback:["I'll always love you!"]},
+    roast:{intro:["Be nice! Please?","Oh, I love your energy. Kind of."],think:["Please be nice.","Words hurt, you know."],die:["Oh no! That was mean.","Don't laugh!"],comeback:["I'll love you anyway.","Your insults are just cries for hugs."]}
+  },
+  pirate:{
+    larp:{intro:["A knight? I'll plunder yer armor!","Swords be no match for cannons!"],think:["Swords be no match for cannons.","Shiny armor, shiny loot!"],die:["To Davy Jones with ye, knight.","Another knight for the deep!"],comeback:["Yarr, ye speak funny fer a landlubber."]},
+    peace:{intro:["A pacifist pirate? Never!","Ye'll get no peace on my sea!"],think:["Peace be fer landlubbers!","Arrr, no peace in these waters!"],die:["Off to the depths with ye, hippie!"]}
+  },
+  larp:{
+    pirate:{intro:["Foul buccaneer, face my blade!","Sea-dog, thou shalt taste my steel!"],think:["Thy cannons cannot pierce my enchantment!","A pirate?! By the gods!"],die:["The sea-dog hath fallen!","Huzzah! The seas are safe!"],comeback:["Thy plunder ends here!"]}
+  },
+  detective:{
+    cheater:{intro:["Something's suspicious about you.","I've got my eye on you."],think:["I'm noticing a pattern of cheating.","Curious. The odds don't add up."],fire:["That trajectory was impossible.","Case file updated: cheating."],win:["Case closed. Suspect confirmed.","As I suspected. Evidence pending."],comeback:["Every cheat leaves a trace."]},
+    chaos:{think:["There's no pattern. That's the pattern.","Random? There's always a tell."],comeback:["Chaos is just patterns I haven't found yet."]}
+  },
+  cheater:{
+    detective:{intro:["Stay out of my business.","Detective? Aww, cute."],think:["You won't find anything.","Prove it."],comeback:["Prove it.","No evidence, no case."]}
+  }
+};
+
+var botQueue = [], replyCool = 0;
+const REACT_CHANCE = {intro:1, think:.4, fire:.3, miss:.45, kill:.5, die:.45, win:.7};
+function later(frames, fn){ botQueue.push({t:frames, fn:fn, gid:gameId}); }
+function tickBotQueue(){
+  if (replyCool > 0) replyCool -= speed;
+  for (let i = botQueue.length - 1; i >= 0; i--){
+    const q = botQueue[i]; q.t -= speed;
+    if (q.t <= 0){ botQueue.splice(i, 1); if (q.gid === gameId){ try{ q.fn(); }catch(e){} } }
+  }
+}
+// returns [linePool, score]; score 2 = written for this exact pairing, 1 = personality reply, 0 = generic
+function replyPool(me, them, cat){
+  const pair = REPLY_TO[me.kind] && REPLY_TO[me.kind][them.kind];
+  if (pair && pair[cat]) return [pair[cat], 2];
+  const any = REPLY_ANY[me.kind];
+  if (any && (any[cat] || any._)) return [any[cat] || any._, 1];
+  return [REPLY_GEN[cat] || REPLY_GEN._, 0];
+}
+function comebackPool(me, them){
+  const pair = REPLY_TO[me.kind] && REPLY_TO[me.kind][them.kind];
+  if (pair && pair.comeback) return pair.comeback;
+  const any = REPLY_ANY[me.kind];
+  return (any && any.comeback) || REPLY_GEN.comeback;
+}
+function reactTo(s, text, cat){
+  const ch = REACT_CHANCE[cat];
+  if (!battle || !teams || !ch || !s || !s.kind) return;
+  if (cat !== 'intro' && (replyCool > 0 || botQueue.length)) return;
+  if (Math.random() > ch) return;
+  const foes = allAlive().filter(f => f.team !== s.team && f.kind);
+  if (!foes.length) return;
+  const top = Math.max(...foes.map(f => replyPool(f, s, cat)[1]));
+  const r = pickOf(foes.filter(f => replyPool(f, s, cat)[1] === top));
+  const rp = replyPool(r, s, cat), pool = rp[0], sig = rp[1] === 2 && Math.random() < 0.55; // signature (first) line of a written pairing shows up more often
+  later(75 + Math.random() * 45, () => {
+    if (!r.alive || (r.say && r.say.t < 70)) return;
+    say(r, sig ? pool[0] : pickOf(pool), 'reply'); replyCool = 240;
+    if (Math.random() < 0.5) later(85 + Math.random() * 40, () => {
+      if (!s.alive || (s.say && s.say.t < 70)) return;
+      say(s, pickOf(comebackPool(s, r)), 'reply');
+    });
+  });
+}
+function scheduleBattleIntro(){
+  if (seriesRound > 1 && Math.random() < 0.5) return;
+  later(100, () => {
+    const all = allAlive().filter(x => x.kind); if (all.length < 2) return;
+    const scripted = all.filter(a => all.some(b => b.team !== a.team && REPLY_TO[b.kind] && REPLY_TO[b.kind][a.kind] && REPLY_TO[b.kind][a.kind].intro));
+    const s = pickOf(scripted.length ? scripted : all);
+    const ia = (TALK[s.kind] && TALK[s.kind].intro) || GEN.intro, line = Math.random() < 0.5 ? ia[0] : pickOf(ia);
+    say(s, line, 'intro'); reactTo(s, line, 'intro');
+  });
+}
+
 const canTalk = s => battle || s.team === 1 || auto;
 const pickOf = a => a[Math.floor(Math.random() * a.length)];
 function say(s, text, cat='talk'){
@@ -2123,7 +2326,8 @@ function talk(s, cat, chance){
   if (!s || !canTalk(s) || Math.random() > chance) return;
   if (s.say && s.say.t < 90 && cat !== 'die') return;
   const own = TALK[s.kind] && TALK[s.kind][cat];
-  say(s, pickOf(own && Math.random() < 0.7 ? own : GEN[cat]), cat);
+  const line = pickOf(own && Math.random() < 0.7 ? own : GEN[cat]);
+  say(s, line, cat); reactTo(s, line, cat);
 }
 function onKill(sh, v){
   if (v.team === sh.team) talk(sh, 'oops', 1); else talk(sh, 'kill', 0.9);
@@ -3138,39 +3342,56 @@ $('mMpCreateRoom').onclick = async () => {
     }
     return null;
   }
+  function ytPick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
   function ytGenerateMeta(){
     const resultText = ($('overtxt').textContent || '').trim();
     const winnerName = ytGuessWinnerName(resultText);
-    const roster = (typeof seriesKinds !== 'undefined' && seriesKinds.length && typeof rosterLine === 'function') ? rosterLine() : '';
-    const emojis = ['🎯','⚡','🔥','🧠','📈','💥','🏆','🚀'];
-    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+    const kinds = (typeof seriesKinds !== 'undefined' && seriesKinds.length) ? seriesKinds.slice() : [];
+    const per = (typeof seriesPer !== 'undefined' && seriesPer > 0) ? seriesPer : 1;
+    const short = k => (typeof botShortName === 'function') ? botShortName(k) : String(k);
+    const winShort = winnerName ? winnerName.replace(/ Bot$/i, '') : '';
 
-    const titleOptions = winnerName ? [
-      winnerName + ' Wins! ' + emoji + ' Graphwar Bot Battle',
-      emoji + ' ' + winnerName + ' Takes the Win — Graphwar Showdown',
-      winnerName + ' WINS?! Insane Graphwar Battle ' + emoji
-    ] : [
-      (resultText || 'Graphwar Battle') + ' ' + emoji,
-      emoji + ' Epic Graphwar Bot Battle'
-    ];
-    let title = titleOptions[Math.floor(Math.random() * titleOptions.length)];
-    if (title.length > 100) title = title.slice(0, 97) + '...';
+    // "5 PEACE BOTS" when teams have several soldiers, "PEACE BOT" when it is one each
+    const team = k => (per > 1 ? per + ' ' + short(k) + ' Bots' : short(k) + ' Bot');
+    const teamsList = kinds.length > 3
+      ? kinds.length + ' Bot Teams'
+      : kinds.map(team).join(' vs ');
+    const teamsUpper = kinds.length > 3
+      ? kinds.length + ' BOT TEAMS'
+      : kinds.map(k => team(k).toUpperCase()).join(' vs '); // keep "vs" lowercase
 
-    const introLine = winnerName
-      ? winnerName + ' pulls off the win in this Graphwar bot battle!'
-      : (resultText ? resultText + ' in this Graphwar bot battle!' : 'Another chaotic Graphwar bot battle!');
-    const rosterLineText = roster ? 'Bots in this one: ' + roster + '.' : '';
-    const hashtags = ['#Graphwarz', '#GraphWar', '#MathBattle', '#BotBattle', '#Gaming', '#Shorts'];
-    if (winnerName) hashtags.splice(1, 0, '#' + winnerName.replace(/[^a-zA-Z0-9]/g, ''));
+    const emoji = ytPick(['💀🔥','💀🔥','🔥💀','😱🔥','💥🤯','⚡🔥']);
+    const tag = '[Graphwars]';
+    const up = t => t.toUpperCase();
 
-    const desc = [introLine, rosterLineText].filter(Boolean).join(' ') + '\n\n' +
-      'Every shot fired is a real math equation - watch the bots calculate their way to victory.\n\n' +
-      'Which bot should win next? Drop it in the comments \u{1F447}\n\n' +
-      hashtags.join(' ');
+    // Titles only say things that are true for this battle: who fought, and who won.
+    const T = [];
+    if (kinds.length){
+      T.push(teamsUpper + ' ' + emoji + ' ' + tag);
+      T.push(teamsUpper + ' ' + emoji + ' ' + tag);
+      T.push(teamsUpper + ' ' + emoji + ' ' + tag);
+      if (winnerName){
+        T.push(teamsUpper + ' - ' + up(winShort) + ' WINS ' + emoji + ' ' + tag);
+        T.push(up(winShort) + (per > 1 ? ' BOTS WIN ' : ' BOT WINS ') + emoji + ' ' + tag);
+      }
+    } else {
+      T.push(winnerName ? up(winShort) + ' BOT WINS ' + emoji + ' ' + tag : 'GRAPHWARS BOT BATTLE ' + emoji + ' ' + tag);
+    }
+    let title = ytPick(T);
+    if (title.length > 100) title = title.replace(/\s*\[Graphwars\]$/, '').slice(0, 97) + '...';
+
+    // Short, plain description: what it is, who won, one question, hashtags.
+    const lines = [];
+    lines.push(kinds.length ? teamsList + ' in Graphwars.' + (winnerName ? ' ' + winnerName + ' wins.' : '') : 'Bot battle in Graphwars.' + (winnerName ? ' ' + winnerName + ' wins.' : ''));
+    lines.push(ytPick(['Which bots should fight next?', 'Who should fight next? Comment below.', 'Comment which bots you want to see next.']));
+    const hashtags = ['#Graphwars', '#BotBattle'];
+    if (winnerName) hashtags.push('#' + winShort.replace(/[^a-zA-Z0-9]/g, '') + 'Bot');
+    kinds.slice(0, 2).forEach(k => { const h = '#' + short(k).replace(/[^a-zA-Z0-9]/g, '') + 'Bot'; if (hashtags.indexOf(h) === -1) hashtags.push(h); });
+    hashtags.push('#Shorts');
 
     $('ytTitle').value = title;
-    $('ytDesc').value = desc;
-    $('ytUploadStatus').textContent = '\u2713 Generated from this battle\u2019s result - tweak it however you like.';
+    $('ytDesc').value = lines.join('\n\n') + '\n\n' + hashtags.join(' ');
+    $('ytUploadStatus').textContent = '\u2713 Generated - hit \uD83C\uDFB2 again for another version, or edit it yourself.';
   }
   $('ytGenerateBtn').onclick = ytGenerateMeta;
   $('ytTitle').oninput = () => { $('ytTitle').dataset.userEdited = '1'; };
